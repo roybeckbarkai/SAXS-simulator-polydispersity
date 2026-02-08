@@ -201,8 +201,9 @@ p_val = st.sidebar.number_input("Polydispersity (p)", min_value=0.01, max_value=
 dist_type = st.sidebar.selectbox("Distribution Type", ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'])
 
 st.sidebar.header("Instrument")
-pixels = st.sidebar.number_input("Pixels", value=512, step=64)
+pixels = st.sidebar.number_input("Detector Size (NxN)", value=512, step=64, help="The detector will be N x N pixels.")
 q_max = st.sidebar.number_input("Max q (nm⁻¹)", value=2.5, step=0.1)
+n_bins = st.sidebar.number_input("1D Bins", value=200, min_value=10, step=10, help="Number of radial bins for 1D profile integration.")
 smearing = st.sidebar.number_input("Smearing (px)", value=2.0, step=0.5)
 
 st.sidebar.header("Flux & Noise")
@@ -276,21 +277,22 @@ else:
     i_2d_final = i_2d_scaled
 
 # 8. Radial Averaging (Experimental 1D)
-# Radial binning
-bin_width = q_max / (pixels/2)
+# Radial binning using n_bins
+bin_width = q_max / n_bins
 r_indices = (qv_r / bin_width).astype(int).ravel()
-# Ensure indices are valid
-valid_mask = r_indices < (pixels // 2)
+# Ensure indices are valid (circular mask up to q_max)
+valid_mask = (r_indices >= 0) & (r_indices < n_bins)
 
 # Fix: Filter both indices AND weights using valid_mask
-tbin = np.bincount(r_indices[valid_mask], weights=i_2d_final.ravel()[valid_mask])
-nr = np.bincount(r_indices[valid_mask])
+tbin = np.bincount(r_indices[valid_mask], weights=i_2d_final.ravel()[valid_mask], minlength=n_bins)
+nr = np.bincount(r_indices[valid_mask], minlength=n_bins)
 
-radial_prof = np.zeros_like(tbin)
+radial_prof = np.zeros(n_bins)
 nonzero = nr > 0
 radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
 
-q_exp = np.arange(len(radial_prof)) * bin_width
+# Use midpoint of bins for q
+q_exp = (np.arange(n_bins) + 0.5) * bin_width
 i_exp = radial_prof
 
 # --- Analysis ---
