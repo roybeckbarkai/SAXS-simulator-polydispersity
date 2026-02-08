@@ -394,7 +394,8 @@ with col_viz1:
     st.subheader("2D Detector")
     fig2, ax2 = plt.subplots(figsize=(5, 4))
     im = ax2.imshow(np.log10(np.maximum(i_2d_final, 1)), extent=[-q_max, q_max, -q_max, q_max], origin='lower', cmap='jet')
-    plt.colorbar(im, ax=ax_2d, label="log10(I)")
+    # Fixed: Use ax2 instead of undefined ax_2d
+    plt.colorbar(im, ax=ax2, label="log10(I)")
     ax2.set_xlabel("qx (nm⁻¹)")
     ax2.set_ylabel("qy (nm⁻¹)")
     st.pyplot(fig2)
@@ -453,8 +454,7 @@ with c1:
     
     st.markdown("**Mean Rg (Num Avg)**")
     st.metric("Input", f"{mean_rg:.2f} nm")
-    # Show primary recovery (PDI)
-    st.metric("Recovered (PDI)", f"{rg_num_rec_pdi:.2f} nm", delta=f"{rg_num_rec_pdi - mean_rg:.2f}")
+    st.metric("Recovered", f"{rg_num_rec_pdi:.2f} nm", delta=f"{rg_num_rec_pdi - mean_rg:.2f}")
 
 with c2:
     st.markdown("**Parameters**")
