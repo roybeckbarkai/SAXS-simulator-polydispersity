@@ -178,10 +178,11 @@ def get_calculated_mean_rg_num(rg_scat, p, dist_type):
     m8 = get_normalized_moment(8, p, dist_type)
     if m6 <= 0: return 0
     
-    # ratio = Rg_scat / Rg_num_theory
     # Rg_scat_theory = sqrt(3/5 * M8/M6) * R_num
-    # Rg_num_theory  = sqrt(3/5) * R_num
-    # Ratio = sqrt(M8/M6)
+    # Therefore R_num = Rg_scat / sqrt(3/5 * M8/M6)
+    # But we want Rg_num which is sqrt(3/5)*R_num
+    # So Rg_num = sqrt(3/5) * [ Rg_scat / sqrt(3/5 * M8/M6) ]
+    #           = Rg_scat / sqrt(M8/M6)
     ratio = np.sqrt(m8 / m6)
     return rg_scat / ratio
 
@@ -391,7 +392,7 @@ with col_viz1:
     st.subheader("2D Detector")
     fig2, ax2 = plt.subplots(figsize=(5, 4))
     im = ax2.imshow(np.log10(np.maximum(i_2d_final, 1)), extent=[-q_max, q_max, -q_max, q_max], origin='lower', cmap='jet')
-    plt.colorbar(im, ax=ax_2d, label="log10(I)")
+    plt.colorbar(im, ax=ax2, label="log10(I)")
     ax2.set_xlabel("qx (nm⁻¹)")
     ax2.set_ylabel("qy (nm⁻¹)")
     st.pyplot(fig2)

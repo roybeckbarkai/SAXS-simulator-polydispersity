@@ -1,19 +1,20 @@
-# 🎈 Blank app template
+SAXS Simulator: Polydisperse Spheres
 
-A simple Streamlit app template for you to modify!
+A Python Streamlit application for simulating and analyzing Small-Angle X-ray Scattering (SAXS) data.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+Features
 
-### How to run it on your own machine
+Simulation: Generates 2D and 1D SAXS patterns for spheres with various size distributions (Gaussian, Lognormal, Schulz, etc.).
 
-1. Install the requirements
+Physics: Includes form factors, structure averaging, smearing, flux scaling, and Poisson noise.
 
-   ```
-   $ pip install -r requirements.txt
-   ```
+Analysis: Performs Unified Fit (Guinier/Porod), calculates Scattering Invariants (q, L_c), and estimates Polydispersity Indices (PDI, PDI2).
 
-2. Run the app
+Recovery: Back-calculates the input size distribution parameters using the method described by Tomchuk et al.
+How to Run
+I
+nstall Dependencies:
+pip install -r requirements.txt
 
-   ```
-   $ streamlit run streamlit_app.py
-   ```
+Run the App:
+streamlit run saxs_sim.py
