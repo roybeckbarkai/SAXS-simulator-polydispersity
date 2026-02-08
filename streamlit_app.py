@@ -201,9 +201,9 @@ p_val = st.sidebar.number_input("Polydispersity (p)", min_value=0.01, max_value=
 dist_type = st.sidebar.selectbox("Distribution Type", ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'])
 
 st.sidebar.header("Instrument")
-pixels = st.sidebar.number_input("Detector Size (NxN)", value=512, step=64, help="The detector will be N x N pixels.")
+pixels = st.sidebar.number_input("Detector Size (NxN)", value=1024, step=64, help="The detector will be N x N pixels.")
 q_max = st.sidebar.number_input("Max q (nm⁻¹)", value=2.5, step=0.1)
-n_bins = st.sidebar.number_input("1D Bins", value=200, min_value=10, step=10, help="Number of radial bins for 1D profile integration.")
+n_bins = st.sidebar.number_input("1D Bins", value=512, min_value=10, step=10, help="Number of radial bins for 1D profile integration.")
 smearing = st.sidebar.number_input("Smearing (px)", value=2.0, step=0.5)
 
 st.sidebar.header("Flux & Noise")
@@ -292,8 +292,10 @@ nonzero = nr > 0
 radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
 
 # Use midpoint of bins for q
-q_exp = (np.arange(n_bins) + 0.5) * bin_width
-i_exp = radial_prof
+q_exp_all = (np.arange(n_bins) + 0.5) * bin_width
+# Filter out empty bins to avoid zeros in log plots/analysis
+q_exp = q_exp_all[nonzero]
+i_exp = radial_prof[nonzero]
 
 # --- Analysis ---
 
@@ -396,7 +398,6 @@ with col_viz1:
     st.subheader("2D Detector")
     fig2, ax2 = plt.subplots(figsize=(5, 4))
     im = ax2.imshow(np.log10(np.maximum(i_2d_final, 1)), extent=[-q_max, q_max, -q_max, q_max], origin='lower', cmap='jet')
-    # Fixed: Use ax2 instead of undefined ax_2d
     plt.colorbar(im, ax=ax2, label="log10(I)")
     ax2.set_xlabel("qx (nm⁻¹)")
     ax2.set_ylabel("qy (nm⁻¹)")
