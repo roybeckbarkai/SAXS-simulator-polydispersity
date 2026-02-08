@@ -6,6 +6,7 @@ from scipy.ndimage import gaussian_filter
 from scipy.optimize import bisect
 from scipy.integrate import trapezoid
 import pandas as pd
+import io
 
 # --- 1. Math & Physics Utilities ---
 
@@ -19,14 +20,54 @@ def nCr(n, r):
     except:
         return 1
 
+def parse_saxs_file(uploaded_file):
+    """
+    Parses versatile 1D SAXS data (ATSAS format, csv, space-delimited).
+    Expects columns: q, I, [Error]
+    Skips headers and non-numeric lines.
+    """
+    try:
+        content = uploaded_file.getvalue().decode("utf-8")
+        data = []
+        for line in content.splitlines():
+            # Strip comments and whitespace
+            line = line.split('#')[0].split('!')[0].strip()
+            if not line: continue
+            
+            # Replace commons delimiters with space
+            line = line.replace(',', ' ').replace(';', ' ')
+            parts = line.split()
+            
+            # Check if line contains numbers
+            try:
+                nums = [float(p) for p in parts]
+                if len(nums) >= 2:
+                    # Capture q, I (ignore Error for this specific analysis logic)
+                    data.append([nums[0], nums[1]])
+            except ValueError:
+                continue # Skip header lines
+
+        arr = np.array(data)
+        if arr.shape[0] < 5:
+            return None, None, "File content too short or format not recognized."
+        
+        # Sort by q
+        arr = arr[arr[:, 0].argsort()]
+        
+        # Filter negative/zero q or I if necessary (log analysis needs >0)
+        # We keep them but analysis steps handle <0 checks
+        
+        return arr[:, 0], arr[:, 1], None
+        
+    except Exception as e:
+        return None, None, f"Error parsing file: {str(e)}"
+
 # --- Distributions ---
 def get_distribution(dist_type, r, mean_r, p):
-    # Avoid numerical errors
     mean_r = max(mean_r, 1e-6)
     p = max(p, 1e-6)
     
     if dist_type == 'Lognormal':
-        # s = sqrt(ln(1 + p^2))
         s = np.sqrt(np.log(1 + p**2))
         scale = mean_r / np.exp(s**2 / 2.0)
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -43,13 +84,11 @@ def get_distribution(dist_type, r, mean_r, p):
         return coef * np.exp(-arg)
 
     elif dist_type == 'Schulz':
-        # z = 1/p^2 - 1
         if p == 0: return np.zeros_like(r)
         z = (1.0 / (p**2)) - 1.0
         if z <= 0: return np.zeros_like(r)
         a = z + 1
         b = a / mean_r
-        # (b^a / Gamma(a)) * r^z * exp(-b*r)
         norm = (b**a) / gamma(a)
         with np.errstate(over='ignore', invalid='ignore'):
              pdf = norm * (r**z) * np.exp(-b * r)
@@ -88,7 +127,6 @@ def get_distribution(dist_type, r, mean_r, p):
 
 # --- Form Factor ---
 def sphere_form_factor(q, r):
-    # Support broadcasting: q shape (Nq, 1), r shape (1, Nr)
     q_col = q[:, np.newaxis]
     r_row = r[np.newaxis, :]
     qr = q_col * r_row
@@ -98,10 +136,9 @@ def sphere_form_factor(q, r):
     amp = np.nan_to_num(amp, nan=1.0) 
     
     vol = (4.0/3.0) * np.pi * (r_row**3)
-    # Intensity ~ Vol^2 * amp^2
     return (vol**2) * (amp**2)
 
-# --- Analysis / Recovery Logic (Analytical Moments) ---
+# --- Analysis / Recovery Logic ---
 
 def get_normalized_moment(k, p, dist_type):
     if p <= 0: return 1
@@ -167,7 +204,6 @@ def solve_p(target_val, index_type, dist_type):
         return 0.0
 
 def get_calculated_mean_rg_num(rg_scat, p, dist_type):
-    # Returns Number Average Rg based on Scattering Average Rg
     if not rg_scat or rg_scat <= 0: return 0
     if p <= 0: return rg_scat
     
@@ -175,10 +211,6 @@ def get_calculated_mean_rg_num(rg_scat, p, dist_type):
     m8 = get_normalized_moment(8, p, dist_type)
     if m6 <= 0: return 0
     
-    # ratio = Rg_scat / Rg_num_theory
-    # Rg_scat_theory = sqrt(3/5 * M8/M6) * R_num
-    # Rg_num_theory  = sqrt(3/5) * R_num
-    # Ratio = sqrt(M8/M6)
     ratio = np.sqrt(m8 / m6)
     return rg_scat / ratio
 
@@ -194,11 +226,28 @@ with col_h2:
     st.markdown("*Tomchuk et al. PDI Analysis*")
 
 # --- Sidebar Controls ---
+
+# File Uploader
+st.sidebar.header("Experimental Data")
+uploaded_file = st.sidebar.file_uploader("Load 1D Profile (q, I)", type=['dat', 'out', 'txt', 'csv'], help="Supports ATSAS .dat files or text files with q and I columns.")
+use_experimental = False
+q_meas, i_meas = None, None
+
+if uploaded_file is not None:
+    q_load, i_load, err = parse_saxs_file(uploaded_file)
+    if err:
+        st.sidebar.error(err)
+    else:
+        st.sidebar.success(f"Loaded {len(q_load)} points.")
+        use_experimental = st.sidebar.checkbox("Use Loaded Data", value=True)
+        if use_experimental:
+            q_meas, i_meas = q_load, i_load
+
 st.sidebar.header("Sample Parameters")
-# Using geometric mean relation: <R> = sqrt(5/3) * <Rg>
+# Input sliders always visible as they act as 'Reference' when exp data is loaded
 mean_rg = st.sidebar.number_input("Mean Rg (nm)", min_value=0.5, max_value=50.0, value=4.0, step=0.5, help="Number-Average Radius of Gyration")
 p_val = st.sidebar.number_input("Polydispersity (p)", min_value=0.01, max_value=6.0, value=0.3, step=0.01, help="sigma / mean_R")
-dist_type = st.sidebar.selectbox("Distribution Type", ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'])
+dist_type = st.sidebar.selectbox("Distribution Type", ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'], help="Assumed distribution type for PDI recovery analysis.")
 
 st.sidebar.header("Instrument")
 pixels = st.sidebar.number_input("Detector Size (NxN)", value=1024, step=64, help="The detector will be N x N pixels.")
@@ -216,74 +265,57 @@ with col_f2:
 optimal_flux = st.sidebar.checkbox("Optimal Flux (No Noise)", value=False)
 add_noise = st.sidebar.checkbox("Simulate Poisson Noise", value=True, disabled=optimal_flux)
 
-# --- Calculation Engine ---
+# --- Calculation Engine (Simulation) ---
+# We compute simulation data regardless to keep reference plots available or fallback
 
-# 1. Physics Constants
 mean_r = mean_rg * np.sqrt(5.0/3.0)
 flux = flux_pre * (10**flux_exp)
 sigma = p_val * mean_r
 
-# 2. Distribution Arrays
-# Extended range for broad distributions (15 sigma)
+# Distribution Arrays
 r_min = max(0.1, mean_r - 5 * sigma)
 r_max = mean_r + 15 * sigma
 r_steps = 400
 r_vals = np.linspace(r_min, r_max, r_steps)
 pdf_vals = get_distribution(dist_type, r_vals, mean_r, p_val)
-
-# Normalize PDF
 area = trapezoid(pdf_vals, r_vals)
-if area > 0:
-    pdf_vals /= area
+if area > 0: pdf_vals /= area
 
-# 3. 1D Ideal Profile
+# 1D Ideal
 q_steps = 200
-# Log space q for better low-q resolution
 q_1d = np.logspace(np.log10(1e-3), np.log10(q_max * 1.5), q_steps)
+i_matrix = sphere_form_factor(q_1d, r_vals) 
+i_1d_ideal = trapezoid(i_matrix * pdf_vals, r_vals, axis=1) 
 
-# Intensity ~ Integral [ P(r) * I_sphere(q,r) ] dr
-# sphere_form_factor handles q (Nq, 1) and r (1, Nr) broadcasting
-i_matrix = sphere_form_factor(q_1d, r_vals) # Shape (Nq, Nr)
-# Integrate over r (axis 1)
-i_1d_ideal = trapezoid(i_matrix * pdf_vals, r_vals, axis=1) # Shape (Nq,)
-
-# 4. 2D Image Generation
+# 2D Image & Radial Profile
 x = np.linspace(-q_max, q_max, pixels)
 y = np.linspace(-q_max, q_max, pixels)
 xv, yv = np.meshgrid(x, y)
 qv_r = np.sqrt(xv**2 + yv**2)
 
-# Interpolate 1D Ideal to 2D Grid
 i_2d_ideal = np.interp(qv_r.ravel(), q_1d, i_1d_ideal, left=i_1d_ideal[0], right=0)
 i_2d_ideal = i_2d_ideal.reshape(pixels, pixels)
 
-# 5. Smearing
 if smearing > 0:
     i_2d_smeared = gaussian_filter(i_2d_ideal, sigma=smearing)
 else:
     i_2d_smeared = i_2d_ideal
 
-# 6. Flux Scaling
 total_int = np.sum(i_2d_smeared)
 scale_factor = flux / total_int if total_int > 0 else 1.0
 i_2d_scaled = i_2d_smeared * scale_factor
 
-# 7. Noise
 if not optimal_flux and add_noise:
-    # Gaussian approx for Poisson: N(I, sqrt(I))
     noise_vals = np.random.normal(loc=0.0, scale=np.sqrt(np.maximum(i_2d_scaled, 1e-9)))
     i_2d_final = np.maximum(0, i_2d_scaled + noise_vals)
 else:
     i_2d_final = i_2d_scaled
 
-# 8. Radial Averaging (Experimental 1D)
-# Radial binning using n_bins
+# Radial Averaging
 bin_width = q_max / n_bins
 r_indices = (qv_r / bin_width).astype(int).ravel()
-# Ensure indices are valid (circular mask up to q_max)
 valid_mask = (r_indices >= 0) & (r_indices < n_bins)
 
-# Fix: Filter both indices AND weights using valid_mask
 tbin = np.bincount(r_indices[valid_mask], weights=i_2d_final.ravel()[valid_mask], minlength=n_bins)
 nr = np.bincount(r_indices[valid_mask], minlength=n_bins)
 
@@ -291,60 +323,64 @@ radial_prof = np.zeros(n_bins)
 nonzero = nr > 0
 radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
 
-# Use midpoint of bins for q
-q_exp_all = (np.arange(n_bins) + 0.5) * bin_width
-# Filter out empty bins to avoid zeros in log plots/analysis
-q_exp = q_exp_all[nonzero]
-i_exp = radial_prof[nonzero]
+q_sim = (np.arange(n_bins) + 0.5) * bin_width
+# Filter non-zero for log plots
+valid_sim = radial_prof > 0
+q_sim = q_sim[valid_sim]
+i_sim = radial_prof[valid_sim]
 
-# --- Analysis ---
 
-# 1. Invariants with Porod Tail Correction
-# Need B estimate first (last 20 points)
-n_fit_b = min(20, len(q_exp)//4)
-if n_fit_b > 0 and len(q_exp) > n_fit_b:
-    b_region_i = i_exp[-n_fit_b:]
-    b_region_q = q_exp[-n_fit_b:]
+# --- Determine Active Data for Analysis ---
+if use_experimental and q_meas is not None:
+    q_target = q_meas
+    i_target = i_meas
+else:
+    q_target = q_sim
+    i_target = i_sim
+
+# --- Analysis Logic ---
+
+# 1. Invariants
+n_fit_b = min(20, len(q_target)//4)
+if n_fit_b > 0 and len(q_target) > n_fit_b:
+    b_region_i = i_target[-n_fit_b:]
+    b_region_q = q_target[-n_fit_b:]
     b_vals = b_region_i * (b_region_q**4)
     B_est = np.mean(b_vals)
 else:
     B_est = 0
 
-q_max_meas = q_exp[-1] if len(q_exp) > 0 else 0
+q_max_meas = q_target[-1] if len(q_target) > 0 else 0
 
-# Q Integral
-integrand_q = (q_exp**2) * i_exp
-Q_obs = trapezoid(integrand_q, q_exp)
+integrand_q = (q_target**2) * i_target
+Q_obs = trapezoid(integrand_q, q_target)
 Q_tail = B_est / q_max_meas if q_max_meas > 0 else 0
 Q = Q_obs + Q_tail
 
-# lc Integral
-integrand_lc = q_exp * i_exp
-lin_obs = trapezoid(integrand_lc, q_exp)
+integrand_lc = q_target * i_target
+lin_obs = trapezoid(integrand_lc, q_target)
 lin_tail = B_est / (2 * q_max_meas**2) if q_max_meas > 0 else 0
 lc = (np.pi / Q) * (lin_obs + lin_tail) if Q > 0 else 0
 
-# 2. Iterative Guinier Fit
-rg_fit = mean_rg
-g_fit = i_exp[0] if len(i_exp) > 0 else 1.0
+# 2. Iterative Guinier Fit (Use sidebar Mean Rg as initial guess)
+rg_fit = mean_rg 
+g_fit = i_target[0] if len(i_target) > 0 else 1.0
 valid_fit = False
 
-for _ in range(3): # Iterate
-    # Strict limit q*Rg < 1.0
-    mask = (q_exp * rg_fit) < 1.0
-    mask = mask & (q_exp > 0) & (i_exp > 0)
+for _ in range(3): 
+    mask = (q_target * rg_fit) < 1.0
+    mask = mask & (q_target > 0) & (i_target > 0)
     
     if np.sum(mask) < 3: break
     
-    x_fit = q_exp[mask]**2
-    y_fit = np.log(i_exp[mask])
+    x_fit = q_target[mask]**2
+    y_fit = np.log(i_target[mask])
     
     try:
         slope, intercept = np.polyfit(x_fit, y_fit, 1)
-        if slope >= 0: break # unphysical
+        if slope >= 0: break 
         rg_new = np.sqrt(np.abs(-3 * slope))
         g_new = np.exp(intercept)
-        
         rg_fit = rg_new
         g_fit = g_new
         valid_fit = True
@@ -364,11 +400,10 @@ if Q > 0:
 p_rec_pdi = solve_p(pdi_val, 'PDI', dist_type)
 p_rec_pdi2 = solve_p(pdi2_val, 'PDI2', dist_type)
 
-# Calculate Rg number average for both methods
 rg_num_rec_pdi = get_calculated_mean_rg_num(rg_fit, p_rec_pdi, dist_type)
 rg_num_rec_pdi2 = get_calculated_mean_rg_num(rg_fit, p_rec_pdi2, dist_type)
 
-# Theoretical Rg (Scattering) Benchmark from PDF
+# Theoretical Rg from Simulation (Reference only, irrelevant if exp data used but good for comparison)
 m6_arr = (r_vals**6) * pdf_vals
 m8_arr = (r_vals**8) * pdf_vals
 m6_int = trapezoid(m6_arr, r_vals)
@@ -377,65 +412,73 @@ rg_theory_scat = 0
 if m6_int > 0:
     rg_theory_scat = np.sqrt(0.6 * (m8_int / m6_int))
 
-# Recovery Distributions
-# PDI based
+# Recovery Distributions for Plotting
 mean_r_pdi = rg_num_rec_pdi * np.sqrt(5.0/3.0)
 pdf_pdi = get_distribution(dist_type, r_vals, mean_r_pdi, p_rec_pdi)
 a_pdi = trapezoid(pdf_pdi, r_vals)
 if a_pdi > 0: pdf_pdi /= a_pdi
 
-# PDI2 based
 mean_r_pdi2 = rg_num_rec_pdi2 * np.sqrt(5.0/3.0)
 pdf_pdi2 = get_distribution(dist_type, r_vals, mean_r_pdi2, p_rec_pdi2)
 a_pdi2 = trapezoid(pdf_pdi2, r_vals)
 if a_pdi2 > 0: pdf_pdi2 /= a_pdi2
+
 
 # --- 3. Visualization ---
 
 col_viz1, col_viz2 = st.columns(2)
 
 with col_viz1:
-    st.subheader("2D Detector")
-    fig2, ax2 = plt.subplots(figsize=(5, 4))
-    im = ax2.imshow(np.log10(np.maximum(i_2d_final, 1)), extent=[-q_max, q_max, -q_max, q_max], origin='lower', cmap='jet')
-    plt.colorbar(im, ax=ax2, label="log10(I)")
-    ax2.set_xlabel("qx (nm⁻¹)")
-    ax2.set_ylabel("qy (nm⁻¹)")
-    st.pyplot(fig2)
+    if use_experimental:
+        st.subheader("Experimental Data Active")
+        st.info("2D Detector View is disabled when analyzing uploaded 1D data.")
+    else:
+        st.subheader("2D Detector")
+        fig2, ax2 = plt.subplots(figsize=(5, 4))
+        im = ax2.imshow(np.log10(np.maximum(i_2d_final, 1)), extent=[-q_max, q_max, -q_max, q_max], origin='lower', cmap='jet')
+        plt.colorbar(im, ax=ax2, label="log10(I)")
+        ax2.set_xlabel("qx (nm⁻¹)")
+        ax2.set_ylabel("qy (nm⁻¹)")
+        st.pyplot(fig2)
 
 with col_viz2:
-    st.subheader("1D Profile")
+    st.subheader("1D Profile Analysis")
     plot_type = st.selectbox("Plot Type", ["Log-Log", "Lin-Lin", "Guinier", "Porod", "Kratky"])
     fig1, ax1 = plt.subplots(figsize=(5, 4))
     
+    # Plot active data
+    label_str = 'Experimental' if use_experimental else 'Simulated'
+    color_str = 'green' if use_experimental else 'blue'
+
     if plot_type == "Log-Log":
-        ax1.loglog(q_exp, i_exp, label='Simulated')
+        ax1.loglog(q_target, i_target, label=label_str, color=color_str)
         ax1.set_xlabel("q (nm⁻¹)")
         ax1.set_ylabel("I(q)")
     elif plot_type == "Lin-Lin":
-        ax1.plot(q_exp, i_exp, label='Simulated')
+        ax1.plot(q_target, i_target, label=label_str, color=color_str)
     elif plot_type == "Guinier":
-        x_g = q_exp**2
-        y_g = np.log(np.maximum(i_exp, 1e-9))
-        ax1.plot(x_g, y_g, '.', label='Data', markersize=3)
+        x_g = q_target**2
+        y_g = np.log(np.maximum(i_target, 1e-9))
+        ax1.plot(x_g, y_g, '.', label=label_str, color=color_str, markersize=3)
         if valid_fit:
             x_line = np.linspace(0, (1.2/rg_fit)**2, 50)
             y_line = np.log(g_fit) - (rg_fit**2/3.0)*x_line
             ax1.plot(x_line, y_line, 'r--', label='Fit')
         ax1.set_xlabel("q² (nm⁻²)")
         ax1.set_ylabel("ln(I)")
-        ax1.set_xlim(0, (2.0/mean_rg)**2)
-        ax1.set_ylim(np.log(g_fit)-3, np.log(g_fit)+0.5)
+        if valid_fit and rg_fit > 0:
+            ax1.set_xlim(0, (2.0/rg_fit)**2)
+            ax1.set_ylim(np.log(g_fit)-3, np.log(g_fit)+0.5)
     elif plot_type == "Porod":
-        y_p = i_exp * (q_exp**4)
-        ax1.plot(q_exp, y_p, label='Data')
+        y_p = i_target * (q_target**4)
+        ax1.plot(q_target, y_p, label=label_str, color=color_str)
         if B_est > 0:
             ax1.axhline(B_est, color='r', linestyle='--', label='B (Fit)')
         ax1.set_xlabel("q")
         ax1.set_ylabel("I · q⁴")
     elif plot_type == "Kratky":
-        y_k = i_exp * (q_exp**2)
-        ax1.plot(q_exp, y_k, label='Data')
+        y_k = i_target * (q_target**2)
+        ax1.plot(q_target, y_k, label=label_str, color=color_str)
         ax1.set_xlabel("q")
         ax1.set_ylabel("I · q²")
 
@@ -451,18 +494,23 @@ c1, c2, c3 = st.columns(3)
 
 with c1:
     st.markdown("**Polydispersity (p)**")
-    st.metric("Input", f"{p_val:.3f}")
+    
+    # Input column logic
+    input_label = "Ref (Sidebar)" if use_experimental else "Input"
+    
+    st.metric(input_label, f"{p_val:.3f}")
     st.metric("Recovered (PDI)", f"{p_rec_pdi:.3f}")
     st.metric("Recovered (PDI₂)", f"{p_rec_pdi2:.3f}")
     
     st.markdown("**Mean Rg (Num Avg)**")
-    st.metric("Input", f"{mean_rg:.2f} nm")
-    st.metric("Recovered", f"{rg_num_rec_pdi:.2f} nm", delta=f"{rg_num_rec_pdi - mean_rg:.2f}")
+    st.metric(input_label, f"{mean_rg:.2f} nm")
+    delta_val = rg_num_rec_pdi - mean_rg
+    st.metric("Recovered", f"{rg_num_rec_pdi:.2f} nm", delta=f"{delta_val:.2f}" if not use_experimental else None)
 
 with c2:
     st.markdown("**Parameters**")
     res_df = pd.DataFrame({
-        "Parameter": ["Q", "lc", "Rg (Fit)", "Rg (Theory)", "G", "B"],
+        "Parameter": ["Q", "lc", "Rg (Fit)", "Rg (Theory Ref)", "G", "B"],
         "Value": [
             f"{Q:.2e}", 
             f"{lc:.2f} nm", 
@@ -477,7 +525,8 @@ with c2:
 with c3:
     st.markdown("**Distribution**")
     fig3, ax3 = plt.subplots(figsize=(4, 3))
-    ax3.plot(r_vals, pdf_vals, 'k--', label='Input')
+    # Only show "Input" dashed line if it is relevant or user wants to compare against Sidebar theory
+    ax3.plot(r_vals, pdf_vals, 'k--', label=input_label)
     ax3.plot(r_vals, pdf_pdi, 'b-', alpha=0.7, label='PDI Rec.')
     ax3.plot(r_vals, pdf_pdi2, 'r-', alpha=0.7, label='PDI₂ Rec.')
     ax3.set_xlabel("Radius (nm)")
@@ -485,6 +534,6 @@ with c3:
     ax3.legend()
     st.pyplot(fig3)
 
-# Download
-csv = pd.DataFrame({"q": q_exp, "I": i_exp}).to_csv(index=False)
-st.download_button("Download 1D Data", csv, "saxs_1d.csv", "text/csv")
+# Download processed analysis data (even if experimental)
+csv = pd.DataFrame({"q": q_target, "I": i_target}).to_csv(index=False)
+st.download_button("Download Active 1D Data", csv, "active_data.csv", "text/csv")
