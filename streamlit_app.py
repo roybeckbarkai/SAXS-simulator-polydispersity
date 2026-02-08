@@ -1,6 +1,6 @@
 import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 from scipy.special import erf, gamma, factorial
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import bisect
@@ -237,7 +237,6 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type):
     if n_fit_b > 0 and len(q_exp) > n_fit_b:
         b_region_i = i_exp[-n_fit_b:]
         b_region_q = q_exp[-n_fit_b:]
-        # Simple mean of I*q^4
         b_vals = b_region_i * (b_region_q**4)
         B_est = np.mean(b_vals)
 
@@ -254,12 +253,9 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type):
     lc = (np.pi / Q) * (lin_obs + lin_tail) if Q > 0 else 0
 
     # 2. Iterative Guinier Fit
-    # Rough estimate for Rg to start iteration
     rg_fit = 10.0 # Default fallback
     
-    # Try to find Rg from initial slope
     try:
-        # Initial guess from very low q
         low_q_idx = max(3, min(10, len(q_exp)//10))
         x_init = q_exp[:low_q_idx]**2
         y_init = np.log(np.maximum(i_exp[:low_q_idx], 1e-9))
@@ -322,6 +318,43 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type):
     
     return results
 
+def create_download_data(r, input_dist, pdi_dist, pdi2_dist, analysis_res, params, input_label):
+    # Construct Header
+    header = f"""# SAXS Analysis Results
+# ==========================================
+# Input/Reference Parameters:
+#   Mean Rg (Num Avg): {params['mean_rg']:.4f} nm
+#   Polydispersity (p): {params['p_val']:.4f}
+#   Distribution Type: {params['dist_type']}
+#
+# Analysis Output:
+#   Porod Invariant (Q): {analysis_res['Q']:.6e}
+#   Correlation Length (lc): {analysis_res['lc']:.6f} nm
+#   Rg (Fit, Scattering Avg): {analysis_res['Rg']:.6f} nm
+#   G (Forward Scattering): {analysis_res['G']:.6e}
+#   B (Porod Constant): {analysis_res['B']:.6e}
+#
+# Recovery Findings:
+#   PDI (Calculated): {analysis_res['PDI']:.6f}
+#   PDI2 (Calculated): {analysis_res['PDI2']:.6f}
+#   Recovered p (from PDI): {analysis_res['p_from_PDI']:.6f}
+#   Recovered p (from PDI2): {analysis_res['p_from_PDI2']:.6f}
+#   Recovered Mean Rg (from PDI): {analysis_res['rg_num_rec_PDI']:.6f} nm
+#   Recovered Mean Rg (from PDI2): {analysis_res['rg_num_rec_PDI2']:.6f} nm
+# ==========================================
+# Data Columns:
+# Radius [nm], {input_label}_PDF, PDI_Recovered_PDF, PDI2_Recovered_PDF
+"""
+    # Create DataFrame for CSV part
+    df = pd.DataFrame({
+        'Radius': r,
+        f'{input_label}_PDF': input_dist,
+        'PDI_Recovered_PDF': pdi_dist,
+        'PDI2_Recovered_PDF': pdi2_dist
+    })
+    
+    return header + df.to_csv(index=False)
+
 # --- 2. Streamlit App Layout ---
 
 st.set_page_config(page_title="SAXS Simulator", layout="wide", page_icon="⚛️")
@@ -350,7 +383,7 @@ uploaded_file = st.sidebar.file_uploader("Load 1D Profile (q, I)", type=['dat', 
 use_experimental = False
 q_meas, i_meas = None, None
 
-# Handle File Logic: Load, Analyze, Update Params
+# Handle File Logic
 if uploaded_file is not None:
     q_load, i_load, err = parse_saxs_file(uploaded_file)
     if err:
@@ -363,27 +396,18 @@ if uploaded_file is not None:
             q_meas, i_meas = q_load, i_load
             
             # --- Auto-Update Logic ---
-            # Check if this is a new file we haven't processed yet
             if st.session_state['last_filename'] != uploaded_file.name:
                 st.session_state['last_filename'] = uploaded_file.name
                 
-                # 1. Update Limits from File
                 file_min_q = float(np.min(q_meas))
                 file_max_q = float(np.max(q_meas))
                 file_n_bins = len(q_meas)
                 
-                # Update Session State directly
                 st.session_state['q_min'] = file_min_q
                 st.session_state['q_max'] = file_max_q
                 st.session_state['n_bins'] = file_n_bins
                 
-                # 2. Run Analysis immediately to get Rg and p for sidebar
-                # We need the current distribution type for recovery. 
-                # We can't access the widget value before it renders? 
-                # Actually we can if it's in session state or default 'Gaussian'.
-                # Let's assume Gaussian or whatever was last set.
                 current_dist_type = st.session_state.get('dist_type', 'Gaussian')
-                
                 res = perform_saxs_analysis(q_meas, i_meas, current_dist_type)
                 
                 if res['rg_num_rec_PDI'] > 0:
@@ -391,11 +415,9 @@ if uploaded_file is not None:
                 if res['p_from_PDI'] > 0:
                     st.session_state['p_val'] = float(res['p_from_PDI'])
                 
-                # Force rerun to update widgets
                 st.rerun()
 
 st.sidebar.header("Sample Parameters")
-# Input sliders tied to session state
 mean_rg = st.sidebar.number_input("Mean Rg (nm)", min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', help="Number-Average Radius of Gyration")
 p_val = st.sidebar.number_input("Polydispersity (p)", min_value=0.01, max_value=6.0, step=0.01, key='p_val', help="sigma / mean_R")
 dist_type = st.sidebar.selectbox("Distribution Type", ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'], key='dist_type', help="Assumed distribution type for PDI recovery analysis.")
@@ -427,7 +449,6 @@ mean_r = mean_rg * np.sqrt(5.0/3.0)
 flux = flux_pre * (10**flux_exp)
 sigma = p_val * mean_r
 
-# Distribution Arrays
 r_min = max(0.1, mean_r - 5 * sigma)
 r_max = mean_r + 15 * sigma
 r_steps = 400
@@ -436,13 +457,11 @@ pdf_vals = get_distribution(dist_type, r_vals, mean_r, p_val)
 area = trapezoid(pdf_vals, r_vals)
 if area > 0: pdf_vals /= area
 
-# 1D Ideal
 q_steps = 200
 q_1d = np.logspace(np.log10(1e-3), np.log10(q_max * 1.5), q_steps)
 i_matrix = sphere_form_factor(q_1d, r_vals) 
 i_1d_ideal = trapezoid(i_matrix * pdf_vals, r_vals, axis=1) 
 
-# 2D Image & Radial Profile
 x = np.linspace(-q_max, q_max, pixels)
 y = np.linspace(-q_max, q_max, pixels)
 xv, yv = np.meshgrid(x, y)
@@ -466,12 +485,10 @@ if not optimal_flux and add_noise:
 else:
     i_2d_final = i_2d_scaled
 
-# Radial Averaging of Simulation (always happens for display)
-# We need to use the n_bins and q_range defined by sidebar to match Experimental logic
+# Radial Averaging
 sim_bin_width = (q_max - q_min) / n_bins
-if sim_bin_width <= 0: sim_bin_width = q_max / n_bins # fallback
+if sim_bin_width <= 0: sim_bin_width = q_max / n_bins 
 
-# For simulation, qv_r starts at 0. We need to mask out q < q_min
 r_indices = ((qv_r - q_min) / sim_bin_width).astype(int).ravel()
 valid_mask = (r_indices >= 0) & (r_indices < n_bins) & (qv_r.ravel() <= q_max)
 
@@ -483,7 +500,6 @@ nonzero = nr > 0
 radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
 
 q_sim = q_min + (np.arange(n_bins) + 0.5) * sim_bin_width
-# Filter non-zero
 valid_sim = radial_prof > 0
 q_sim = q_sim[valid_sim]
 i_sim = radial_prof[valid_sim]
@@ -491,32 +507,17 @@ i_sim = radial_prof[valid_sim]
 
 # --- Determine Active Data for Analysis ---
 if use_experimental and q_meas is not None:
-    # 1. Mask Data
     mask = (q_meas >= q_min) & (q_meas <= q_max)
     q_target = q_meas[mask]
     i_target = i_meas[mask]
     
-    # 2. Rebin if needed
-    # If user changed n_bins differs from current length
     if len(q_target) != n_bins:
-        # Rebin logic: Histogram
-        # Define edges
-        edges = np.linspace(q_min, q_max, n_bins + 1)
-        # Digitize
-        bin_idx = np.digitize(q_target, edges) - 1 # 0-indexed
-        
-        # We can't use simple bincount on raw floats easily without pandas or manual loop?
-        # Actually numpy histogram is easier
         count, _ = np.histogram(q_target, bins=n_bins, range=(q_min, q_max))
-        sum_I, _ = np.histogram(q_target, bins=n_bins, weights=i_target, range=(q_min, q_max))
+        sum_I, edges = np.histogram(q_target, bins=n_bins, weights=i_target, range=(q_min, q_max))
         
         with np.errstate(divide='ignore', invalid='ignore'):
             new_I = sum_I / count
-        
-        # Centers
         new_q = 0.5 * (edges[1:] + edges[:-1])
-        
-        # Filter valid
         valid_bins = count > 0
         q_target = new_q[valid_bins]
         i_target = new_I[valid_bins]
@@ -525,7 +526,7 @@ else:
     q_target = q_sim
     i_target = i_sim
 
-# --- Analysis Logic (Using Function) ---
+# --- Analysis Logic ---
 analysis_res = perform_saxs_analysis(q_target, i_target, dist_type)
 
 # Theoretical Rg from Simulation (Reference)
@@ -559,58 +560,78 @@ with col_viz1:
         st.info("Analyzing uploaded 1D data. 2D view disabled.")
     else:
         st.subheader("2D Detector")
-        fig2, ax2 = plt.subplots(figsize=(5, 4))
-        im = ax2.imshow(np.log10(np.maximum(i_2d_final, 1)), extent=[-q_max, q_max, -q_max, q_max], origin='lower', cmap='jet')
-        plt.colorbar(im, ax=ax2, label="log10(I)")
-        ax2.set_xlabel("qx (nm⁻¹)")
-        ax2.set_ylabel("qy (nm⁻¹)")
-        st.pyplot(fig2)
+        fig_2d = go.Figure(data=go.Heatmap(
+            z=np.log10(np.maximum(i_2d_final, 1)),
+            x=np.linspace(-q_max, q_max, pixels),
+            y=np.linspace(-q_max, q_max, pixels),
+            colorscale='Jet',
+            colorbar=dict(title='log10(I)')
+        ))
+        fig_2d.update_layout(
+            xaxis_title='qx (nm⁻¹)',
+            yaxis_title='qy (nm⁻¹)',
+            width=500, height=450,
+            margin=dict(l=40, r=40, t=20, b=40)
+        )
+        st.plotly_chart(fig_2d, use_container_width=True)
 
 with col_viz2:
     st.subheader("1D Profile Analysis")
     plot_type = st.selectbox("Plot Type", ["Log-Log", "Lin-Lin", "Guinier", "Porod", "Kratky"])
-    fig1, ax1 = plt.subplots(figsize=(5, 4))
     
-    # Plot active data
+    fig_1d = go.Figure()
     label_str = 'Experimental' if use_experimental else 'Simulated'
     color_str = 'green' if use_experimental else 'blue'
 
+    # Add Data Trace
+    # Prepare data based on plot type for Plotly
+    # Plotly handles log scales via layout, but Guinier/Porod need transformation
+    
+    plot_x = q_target
+    plot_y = i_target
+    x_type = 'linear'
+    y_type = 'linear'
+    x_label = 'q (nm⁻¹)'
+    y_label = 'I(q)'
+    
     if plot_type == "Log-Log":
-        ax1.loglog(q_target, i_target, label=label_str, color=color_str)
-        ax1.set_xlabel("q (nm⁻¹)")
-        ax1.set_ylabel("I(q)")
-    elif plot_type == "Lin-Lin":
-        ax1.plot(q_target, i_target, label=label_str, color=color_str)
+        x_type = 'log'
+        y_type = 'log'
     elif plot_type == "Guinier":
-        x_g = q_target**2
-        y_g = np.log(np.maximum(i_target, 1e-9))
-        ax1.plot(x_g, y_g, '.', label=label_str, color=color_str, markersize=3)
+        plot_x = q_target**2
+        plot_y = np.log(np.maximum(i_target, 1e-9))
+        x_label = 'q² (nm⁻²)'
+        y_label = 'ln(I)'
+    elif plot_type == "Porod":
+        plot_y = i_target * (q_target**4)
+        y_label = 'I · q⁴'
+    elif plot_type == "Kratky":
+        plot_y = i_target * (q_target**2)
+        y_label = 'I · q²'
+
+    fig_1d.add_trace(go.Scatter(x=plot_x, y=plot_y, mode='markers', name=label_str, marker=dict(color=color_str, size=4)))
+
+    # Add Fit Lines
+    if plot_type == "Guinier":
         rg_f = analysis_res['Rg']
         g_f = analysis_res['G']
         if rg_f > 0:
             x_line = np.linspace(0, (1.2/rg_f)**2, 50)
             y_line = np.log(g_f) - (rg_f**2/3.0)*x_line
-            ax1.plot(x_line, y_line, 'r--', label='Fit')
-            ax1.set_xlim(0, (2.0/rg_f)**2)
-            ax1.set_ylim(np.log(g_f)-3, np.log(g_f)+0.5)
-        ax1.set_xlabel("q² (nm⁻²)")
-        ax1.set_ylabel("ln(I)")
+            fig_1d.add_trace(go.Scatter(x=x_line, y=y_line, mode='lines', name='Fit', line=dict(color='red', dash='dash')))
+            fig_1d.update_xaxes(range=[0, (2.0/rg_f)**2])
+            fig_1d.update_yaxes(range=[np.log(g_f)-3, np.log(g_f)+0.5])
     elif plot_type == "Porod":
-        y_p = i_target * (q_target**4)
-        ax1.plot(q_target, y_p, label=label_str, color=color_str)
         if analysis_res['B'] > 0:
-            ax1.axhline(analysis_res['B'], color='r', linestyle='--', label='B (Fit)')
-        ax1.set_xlabel("q")
-        ax1.set_ylabel("I · q⁴")
-    elif plot_type == "Kratky":
-        y_k = i_target * (q_target**2)
-        ax1.plot(q_target, y_k, label=label_str, color=color_str)
-        ax1.set_xlabel("q")
-        ax1.set_ylabel("I · q²")
+            fig_1d.add_hline(y=analysis_res['B'], line_dash="dash", line_color="red", annotation_text="B (Fit)")
 
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    st.pyplot(fig1)
+    fig_1d.update_layout(
+        xaxis_title=x_label, yaxis_title=y_label,
+        xaxis_type=x_type, yaxis_type=y_type,
+        width=500, height=450,
+        margin=dict(l=40, r=40, t=20, b=40)
+    )
+    st.plotly_chart(fig_1d, use_container_width=True)
 
 # Analysis Panel
 st.markdown("---")
@@ -620,9 +641,7 @@ c1, c2, c3 = st.columns(3)
 
 with c1:
     st.markdown("**Polydispersity (p)**")
-    
     input_label = "Ref (Sidebar)" if use_experimental else "Input"
-    
     st.metric(input_label, f"{p_val:.3f}")
     st.metric("Recovered (PDI)", f"{analysis_res['p_from_PDI']:.3f}")
     st.metric("Recovered (PDI₂)", f"{analysis_res['p_from_PDI2']:.3f}")
@@ -649,15 +668,27 @@ with c2:
 
 with c3:
     st.markdown("**Distribution**")
-    fig3, ax3 = plt.subplots(figsize=(4, 3))
-    ax3.plot(r_vals, pdf_vals, 'k--', label=input_label)
-    ax3.plot(r_vals, pdf_pdi, 'b-', alpha=0.7, label='PDI Rec.')
-    ax3.plot(r_vals, pdf_pdi2, 'r-', alpha=0.7, label='PDI₂ Rec.')
-    ax3.set_xlabel("Radius (nm)")
-    ax3.set_ylabel("Prob")
-    ax3.legend()
-    st.pyplot(fig3)
+    fig_dist = go.Figure()
+    fig_dist.add_trace(go.Scatter(x=r_vals, y=pdf_vals, mode='lines', name=input_label, line=dict(color='gray', dash='dash')))
+    fig_dist.add_trace(go.Scatter(x=r_vals, y=pdf_pdi, mode='lines', name='PDI Rec.', line=dict(color='blue')))
+    fig_dist.add_trace(go.Scatter(x=r_vals, y=pdf_pdi2, mode='lines', name='PDI₂ Rec.', line=dict(color='purple')))
+    
+    fig_dist.update_layout(
+        xaxis_title="Radius (nm)", yaxis_title="Prob",
+        width=400, height=350,
+        margin=dict(l=40, r=40, t=20, b=40),
+        legend=dict(x=0.7, y=1)
+    )
+    st.plotly_chart(fig_dist, use_container_width=True)
 
-# Download processed analysis data (even if experimental)
-csv = pd.DataFrame({"q": q_target, "I": i_target}).to_csv(index=False)
-st.download_button("Download Active 1D Data", csv, "active_data.csv", "text/csv")
+# Download Section
+# Prepare combined download data
+params_dict = {'mean_rg': mean_rg, 'p_val': p_val, 'dist_type': dist_type}
+download_data = create_download_data(r_vals, pdf_vals, pdf_pdi, pdf_pdi2, analysis_res, params_dict, input_label)
+
+st.download_button(
+    label="Download Distribution & Analysis (CSV)",
+    data=download_data,
+    file_name="saxs_analysis_results.csv",
+    mime="text/csv"
+)
