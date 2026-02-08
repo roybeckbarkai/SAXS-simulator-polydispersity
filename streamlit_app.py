@@ -570,8 +570,9 @@ with col_viz1:
         fig_2d.update_layout(
             xaxis_title='qx (nm⁻¹)',
             yaxis_title='qy (nm⁻¹)',
-            width=500, height=450,
-            margin=dict(l=40, r=40, t=20, b=40)
+            width=500, height=500, # Square
+            margin=dict(l=40, r=40, t=20, b=40),
+            yaxis=dict(scaleanchor="x", scaleratio=1) # Lock Aspect Ratio 1:1
         )
         st.plotly_chart(fig_2d, use_container_width=True)
 
