@@ -1,5 +1,5 @@
 # File: analysis_utils.py 
-# Description: Utilities for parsing data, performing Tomchuk analysis, and NNLS distribution recovery.
+# Description: Utilities for parsing data, performing Tomchuk analysis, and NNLS distribution recovery. 
 
 import numpy as np
 from scipy.optimize import bisect, nnls

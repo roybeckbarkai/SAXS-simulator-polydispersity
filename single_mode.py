@@ -1,6 +1,6 @@
 # File: single_mode.py
 # Description: Logic for single simulation runs with interactive parameter adjustments and visualizations.
-# more info just for fun 
+# more info just for fun   
 
 import streamlit as st
 import numpy as np
