@@ -97,7 +97,6 @@ def run():
         summary_results = []
         
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("batch_summary.csv", expanded_df.to_csv(index=False))
             
             for i, row in expanded_df.iterrows():
                 params = row.to_dict()
