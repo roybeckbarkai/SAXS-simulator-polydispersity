@@ -1,4 +1,4 @@
-# File: sim_utils.py
+# File: sim_utils.py 
 # Description: Contains physics models (form factors), size distributions, and the core simulation engine.
 
 import numpy as np

@@ -1,3 +1,6 @@
+# File: batch_mode.py
+# Description: Logic for running batch parameter sweeps.
+
 import streamlit as st
 import pandas as pd
 import io
@@ -7,7 +10,7 @@ import itertools
 import numpy as np
 from datetime import datetime
 from sim_utils import run_simulation_core, get_distribution
-from analysis_utils import perform_saxs_analysis, create_download_data
+from analysis_utils import perform_saxs_analysis, get_header_string, create_intensity_csv, create_distribution_csv
 
 def expand_batch_parameters(df):
     all_jobs = []
@@ -91,6 +94,7 @@ def run():
         
         progress_bar = st.progress(0)
         zip_buffer = io.BytesIO()
+        summary_results = []
         
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             zf.writestr("batch_summary.csv", expanded_df.to_csv(index=False))
@@ -107,6 +111,7 @@ def run():
                                                 params['method'], 
                                                 float(params['nnls_max_rg']))
                     
+                    # Prepare Recovery Dicts
                     rec_dists = {}
                     if params['method'] == 'Tomchuk':
                          m_pdi = res.get('rg_num_rec_pdi', float(params['mean_rg'])) * np.sqrt(5.0/3.0)
@@ -119,14 +124,40 @@ def run():
                     elif 'nnls_r' in res:
                          rec_dists['nnls_r'] = res['nnls_r']
                          rec_dists['nnls_w'] = res['nnls_w']
+
+                    # Generate CSV contents
+                    header = get_header_string(params, res)
+                    intensity_csv = create_intensity_csv(header, q_sim, i_sim, res, params['method'])
+                    dist_csv = create_distribution_csv(header, r_vals, pdf_vals, rec_dists, params)
                     
-                    csv_content = create_download_data(r_vals, pdf_vals, rec_dists, res, params, "Input", q_sim, res.get('I_fit', []))
-                    zf.writestr(f"run_{i}_analysis.csv", csv_content)
+                    zf.writestr(f"run_{i}_intensity.csv", intensity_csv)
+                    zf.writestr(f"run_{i}_distribution.csv", dist_csv)
+                    
+                    # Add to Summary
+                    summary_row = params.copy()
+                    summary_row.update({
+                        'Recovered_p_PDI': res.get('p_rec_pdi', 0),
+                        'Recovered_Rg_PDI': res.get('rg_num_rec_pdi', 0),
+                        'Chi2_PDI': res.get('chi2_pdi', 0),
+                        'Recovered_p_PDI2': res.get('p_rec_pdi2', 0),
+                        'Recovered_Rg_PDI2': res.get('rg_num_rec_pdi2', 0),
+                        'Chi2_PDI2': res.get('chi2_pdi2', 0),
+                        'Recovered_p_NNLS': res.get('p_rec', 0),
+                        'Recovered_Rg_NNLS': res.get('rg_num_rec', 0),
+                        'Chi2_NNLS': res.get('chi2', 0),
+                    })
+                    summary_results.append(summary_row)
+
                 except Exception as e:
                     zf.writestr(f"run_{i}_error.txt", str(e))
                 
                 progress_bar.progress((i + 1) / len(expanded_df))
-        
+            
+            # Save Summary CSV
+            if summary_results:
+                summary_df = pd.DataFrame(summary_results)
+                zf.writestr("batch_results_summary.csv", summary_df.to_csv(index=False))
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         st.success("Batch Complete!")
         st.download_button("Download ZIP", zip_buffer.getvalue(), f"saxs_batch_{timestamp}.zip", "application/zip")
