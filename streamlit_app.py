@@ -21,50 +21,32 @@ def nCr(n, r):
         return 1
 
 def parse_saxs_file(uploaded_file):
-    """
-    Parses versatile 1D SAXS data (ATSAS format, csv, space-delimited).
-    Expects columns: q, I, [Error]
-    Skips headers and non-numeric lines.
-    Filters out NaNs and Infs.
-    """
     try:
         content = uploaded_file.getvalue().decode("utf-8")
         data = []
         for line in content.splitlines():
-            # Strip comments and whitespace
             line = line.split('#')[0].split('!')[0].strip()
             if not line: continue
-            
-            # Replace commons delimiters with space
             line = line.replace(',', ' ').replace(';', ' ')
             parts = line.split()
-            
-            # Check if line contains numbers
             try:
                 nums = [float(p) for p in parts]
                 if len(nums) >= 2:
-                    # Capture q, I (ignore Error for this specific analysis logic)
                     data.append([nums[0], nums[1]])
             except ValueError:
-                continue # Skip header lines
+                continue
 
         arr = np.array(data)
         if arr.shape[0] < 5:
             return None, None, "File content too short or format not recognized."
         
-        # Filter NaNs and Infs
         mask = np.isfinite(arr).all(axis=1)
         arr = arr[mask]
         
         if arr.shape[0] < 5:
             return None, None, "File contains mostly invalid (NaN/Inf) data."
 
-        # Sort by q
         arr = arr[arr[:, 0].argsort()]
-        
-        # Filter negative q or I (simulation logic assumes positive)
-        # We allow negative I for background subtracted data but log plots will hide them
-        # Strictly positive q required
         arr = arr[arr[:, 0] > 0]
         
         return arr[:, 0], arr[:, 1], None
@@ -224,10 +206,9 @@ def get_calculated_mean_rg_num(rg_scat, p, dist_type):
     ratio = np.sqrt(m8 / m6)
     return rg_scat / ratio
 
-def perform_saxs_analysis(q_exp, i_exp, dist_type):
+def perform_saxs_analysis(q_exp, i_exp, dist_type, initial_rg_guess):
     """
-    Core analysis logic extracted to allow running on uploaded data
-    BEFORE main render to update sidebar params.
+    Core analysis logic.
     """
     results = {}
     
@@ -253,23 +234,13 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type):
     lc = (np.pi / Q) * (lin_obs + lin_tail) if Q > 0 else 0
 
     # 2. Iterative Guinier Fit
-    rg_fit = 10.0 # Default fallback
-    
-    try:
-        low_q_idx = max(3, min(10, len(q_exp)//10))
-        x_init = q_exp[:low_q_idx]**2
-        y_init = np.log(np.maximum(i_exp[:low_q_idx], 1e-9))
-        slope, intercept = np.polyfit(x_init, y_init, 1)
-        if slope < 0:
-            rg_fit = np.sqrt(np.abs(-3 * slope))
-    except:
-        pass
-
+    # Use provided guess to start (critical for robustness)
+    rg_fit = initial_rg_guess
     g_fit = i_exp[0] if len(i_exp) > 0 else 1.0
     valid_fit = False
 
-    for _ in range(3): 
-        mask = (q_exp * rg_fit) < 1.0
+    for _ in range(5): 
+        mask = (q_exp * rg_fit) < 1.0 # Strict Guinier limit
         mask = mask & (q_exp > 0) & (i_exp > 0)
         
         if np.sum(mask) < 3: break
@@ -319,7 +290,6 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type):
     return results
 
 def create_download_data(r, input_dist, pdi_dist, pdi2_dist, analysis_res, params, input_label):
-    # Construct Header
     header = f"""# SAXS Analysis Results
 # ==========================================
 # Input/Reference Parameters:
@@ -331,6 +301,7 @@ def create_download_data(r, input_dist, pdi_dist, pdi2_dist, analysis_res, param
 #   Porod Invariant (Q): {analysis_res['Q']:.6e}
 #   Correlation Length (lc): {analysis_res['lc']:.6f} nm
 #   Rg (Fit, Scattering Avg): {analysis_res['Rg']:.6f} nm
+#   Rg (Num Avg, Recovered): {analysis_res['rg_num_rec_PDI']:.6f} nm
 #   G (Forward Scattering): {analysis_res['G']:.6e}
 #   B (Porod Constant): {analysis_res['B']:.6e}
 #
@@ -339,13 +310,10 @@ def create_download_data(r, input_dist, pdi_dist, pdi2_dist, analysis_res, param
 #   PDI2 (Calculated): {analysis_res['PDI2']:.6f}
 #   Recovered p (from PDI): {analysis_res['p_from_PDI']:.6f}
 #   Recovered p (from PDI2): {analysis_res['p_from_PDI2']:.6f}
-#   Recovered Mean Rg (from PDI): {analysis_res['rg_num_rec_PDI']:.6f} nm
-#   Recovered Mean Rg (from PDI2): {analysis_res['rg_num_rec_PDI2']:.6f} nm
 # ==========================================
 # Data Columns:
 # Radius [nm], {input_label}_PDF, PDI_Recovered_PDF, PDI2_Recovered_PDF
 """
-    # Create DataFrame for CSV part
     df = pd.DataFrame({
         'Radius': r,
         f'{input_label}_PDF': input_dist,
@@ -395,7 +363,6 @@ if uploaded_file is not None:
         if use_experimental:
             q_meas, i_meas = q_load, i_load
             
-            # --- Auto-Update Logic ---
             if st.session_state['last_filename'] != uploaded_file.name:
                 st.session_state['last_filename'] = uploaded_file.name
                 
@@ -408,7 +375,9 @@ if uploaded_file is not None:
                 st.session_state['n_bins'] = file_n_bins
                 
                 current_dist_type = st.session_state.get('dist_type', 'Gaussian')
-                res = perform_saxs_analysis(q_meas, i_meas, current_dist_type)
+                # Use current Mean Rg as initial guess for fit
+                current_mean_rg = st.session_state.get('mean_rg', 4.0)
+                res = perform_saxs_analysis(q_meas, i_meas, current_dist_type, current_mean_rg)
                 
                 if res['rg_num_rec_PDI'] > 0:
                     st.session_state['mean_rg'] = float(res['rg_num_rec_PDI'])
@@ -417,8 +386,13 @@ if uploaded_file is not None:
                 
                 st.rerun()
 
+# Callback to auto-update q_max when mean_rg changes
+def update_q_max():
+    if st.session_state.mean_rg > 0:
+        st.session_state.q_max = round(10.0 / st.session_state.mean_rg, 2)
+
 st.sidebar.header("Sample Parameters")
-mean_rg = st.sidebar.number_input("Mean Rg (nm)", min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', help="Number-Average Radius of Gyration")
+mean_rg = st.sidebar.number_input("Mean Rg (nm)", min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', help="Number-Average Radius of Gyration", on_change=update_q_max)
 p_val = st.sidebar.number_input("Polydispersity (p)", min_value=0.01, max_value=6.0, step=0.01, key='p_val', help="sigma / mean_R")
 dist_type = st.sidebar.selectbox("Distribution Type", ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'], key='dist_type', help="Assumed distribution type for PDI recovery analysis.")
 
@@ -431,6 +405,7 @@ with col_q2:
     q_max = st.sidebar.number_input("Max q (nm⁻¹)", min_value=0.01, step=0.1, key='q_max')
     
 n_bins = st.sidebar.number_input("1D Bins", min_value=10, step=10, key='n_bins', help="If different from input data size, data will be rebinned.")
+binning_mode = st.sidebar.selectbox("Binning Mode", ["Logarithmic", "Linear"], help="Logarithmic binning improves high-q statistics (standard for SAXS). Linear is simple averaging.")
 smearing = st.sidebar.number_input("Smearing (px)", value=2.0, step=0.5)
 
 st.sidebar.header("Flux & Noise")
@@ -480,26 +455,47 @@ scale_factor = flux / total_int if total_int > 0 else 1.0
 i_2d_scaled = i_2d_smeared * scale_factor
 
 if not optimal_flux and add_noise:
-    noise_vals = np.random.normal(loc=0.0, scale=np.sqrt(np.maximum(i_2d_scaled, 1e-9)))
-    i_2d_final = np.maximum(0, i_2d_scaled + noise_vals)
+    i_2d_final = np.random.poisson(i_2d_scaled).astype(float)
 else:
     i_2d_final = i_2d_scaled
 
 # Radial Averaging
-sim_bin_width = (q_max - q_min) / n_bins
-if sim_bin_width <= 0: sim_bin_width = q_max / n_bins 
+if binning_mode == "Linear":
+    sim_bin_width = (q_max - q_min) / n_bins
+    if sim_bin_width <= 0: sim_bin_width = q_max / n_bins
+    
+    r_indices = ((qv_r - q_min) / sim_bin_width).astype(int).ravel()
+    valid_mask = (r_indices >= 0) & (r_indices < n_bins) & (qv_r.ravel() <= q_max)
+    
+    tbin = np.bincount(r_indices[valid_mask], weights=i_2d_final.ravel()[valid_mask], minlength=n_bins)
+    nr = np.bincount(r_indices[valid_mask], minlength=n_bins)
+    
+    radial_prof = np.zeros(n_bins)
+    nonzero = nr > 0
+    radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
+    
+    q_sim = q_min + (np.arange(n_bins) + 0.5) * sim_bin_width
+    
+else: # Logarithmic
+    q_min_log = max(q_min, 1e-4)
+    edges = np.logspace(np.log10(q_min_log), np.log10(q_max), n_bins + 1)
+    
+    r_vals_flat = qv_r.ravel()
+    i_vals_flat = i_2d_final.ravel()
+    
+    inds = np.digitize(r_vals_flat, edges)
+    valid_mask = (inds >= 1) & (inds <= n_bins)
+    valid_inds = inds[valid_mask] - 1 
+    
+    tbin = np.bincount(valid_inds, weights=i_vals_flat[valid_mask], minlength=n_bins)
+    nr = np.bincount(valid_inds, minlength=n_bins)
+    
+    radial_prof = np.zeros(n_bins)
+    nonzero = nr > 0
+    radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
+    q_sim = np.sqrt(edges[:-1] * edges[1:])
 
-r_indices = ((qv_r - q_min) / sim_bin_width).astype(int).ravel()
-valid_mask = (r_indices >= 0) & (r_indices < n_bins) & (qv_r.ravel() <= q_max)
 
-tbin = np.bincount(r_indices[valid_mask], weights=i_2d_final.ravel()[valid_mask], minlength=n_bins)
-nr = np.bincount(r_indices[valid_mask], minlength=n_bins)
-
-radial_prof = np.zeros(n_bins)
-nonzero = nr > 0
-radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
-
-q_sim = q_min + (np.arange(n_bins) + 0.5) * sim_bin_width
 valid_sim = radial_prof > 0
 q_sim = q_sim[valid_sim]
 i_sim = radial_prof[valid_sim]
@@ -512,12 +508,21 @@ if use_experimental and q_meas is not None:
     i_target = i_meas[mask]
     
     if len(q_target) != n_bins:
-        count, _ = np.histogram(q_target, bins=n_bins, range=(q_min, q_max))
-        sum_I, edges = np.histogram(q_target, bins=n_bins, weights=i_target, range=(q_min, q_max))
-        
-        with np.errstate(divide='ignore', invalid='ignore'):
-            new_I = sum_I / count
-        new_q = 0.5 * (edges[1:] + edges[:-1])
+        if binning_mode == "Linear":
+            count, _ = np.histogram(q_target, bins=n_bins, range=(q_min, q_max))
+            sum_I, edges = np.histogram(q_target, bins=n_bins, weights=i_target, range=(q_min, q_max))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                new_I = sum_I / count
+            new_q = 0.5 * (edges[1:] + edges[:-1])
+        else: # Log
+            q_min_log = max(q_min, 1e-4)
+            edges = np.logspace(np.log10(q_min_log), np.log10(q_max), n_bins + 1)
+            count, _ = np.histogram(q_target, bins=edges)
+            sum_I, _ = np.histogram(q_target, bins=edges, weights=i_target)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                new_I = sum_I / count
+            new_q = np.sqrt(edges[:-1] * edges[1:])
+            
         valid_bins = count > 0
         q_target = new_q[valid_bins]
         i_target = new_I[valid_bins]
@@ -527,7 +532,7 @@ else:
     i_target = i_sim
 
 # --- Analysis Logic ---
-analysis_res = perform_saxs_analysis(q_target, i_target, dist_type)
+analysis_res = perform_saxs_analysis(q_target, i_target, dist_type, mean_rg)
 
 # Theoretical Rg from Simulation (Reference)
 m6_arr = (r_vals**6) * pdf_vals
@@ -584,10 +589,6 @@ with col_viz2:
     label_str = 'Experimental' if use_experimental else 'Simulated'
     color_str = 'green' if use_experimental else 'blue'
 
-    # Add Data Trace
-    # Prepare data based on plot type for Plotly
-    # Plotly handles log scales via layout, but Guinier/Porod need transformation
-    
     plot_x = q_target
     plot_y = i_target
     x_type = 'linear'
@@ -612,7 +613,6 @@ with col_viz2:
 
     fig_1d.add_trace(go.Scatter(x=plot_x, y=plot_y, mode='markers', name=label_str, marker=dict(color=color_str, size=4)))
 
-    # Add Fit Lines
     if plot_type == "Guinier":
         rg_f = analysis_res['Rg']
         g_f = analysis_res['G']
@@ -655,12 +655,12 @@ with c1:
 with c2:
     st.markdown("**Parameters**")
     res_df = pd.DataFrame({
-        "Parameter": ["Q", "lc", "Rg (Fit)", "Rg (Theory Ref)", "G", "B"],
+        "Parameter": ["Q", "lc", "Rg (Fit, Scat Avg)", "Rg (Num Avg, Rec)", "G", "B"],
         "Value": [
             f"{analysis_res['Q']:.2e}", 
             f"{analysis_res['lc']:.2f} nm", 
             f"{analysis_res['Rg']:.2f} nm", 
-            f"{rg_theory_scat:.2f} nm", 
+            f"{analysis_res['rg_num_rec_PDI']:.2f} nm", 
             f"{analysis_res['G']:.2e}", 
             f"{analysis_res['B']:.2e}"
         ]
@@ -683,7 +683,6 @@ with c3:
     st.plotly_chart(fig_dist, use_container_width=True)
 
 # Download Section
-# Prepare combined download data
 params_dict = {'mean_rg': mean_rg, 'p_val': p_val, 'dist_type': dist_type}
 download_data = create_download_data(r_vals, pdf_vals, pdf_pdi, pdf_pdi2, analysis_res, params_dict, input_label)
 
