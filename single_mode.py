@@ -1,6 +1,6 @@
 # File: single_mode.py
-# Description: Logic for single simulation runs with interactive parameter adjustments and visualizations.
-# more info just for fun   
+# Last Updated: Tuesday, February 10, 2026
+# Description: Handling single, interactive simulation runs.
 
 import streamlit as st
 import numpy as np
@@ -10,10 +10,8 @@ from sim_utils import run_simulation_core, get_distribution
 from analysis_utils import perform_saxs_analysis, get_header_string, create_intensity_csv, create_distribution_csv, parse_saxs_file
 
 def run():
-    # ... (Keep existing Sidebar and Run Logic identical to previous versions) ...
-    # Re-pasting the core logic to ensure context but focusing on the Download Section change.
-
     st.sidebar.title("Configuration")
+    
     if st.sidebar.button("🏠 Return to Home"):
         st.session_state.page = 'home'
         st.rerun()
@@ -26,7 +24,6 @@ def run():
         analysis_method = st.sidebar.selectbox("Analysis Method", ["Tomchuk (Invariants)", "NNLS (Distribution Fit)"])
         analysis_method = "Tomchuk" if "Tomchuk" in analysis_method else "NNLS"
 
-    # ... (Data Loading Logic Same as Before) ...
     st.sidebar.header("Experimental Data")
     uploaded_file = st.sidebar.file_uploader("Load 1D Profile", type=['dat', 'out', 'txt', 'csv'])
     use_experimental = False
@@ -36,10 +33,11 @@ def run():
         q_load, i_load, err = parse_saxs_file(uploaded_file)
         if err: st.sidebar.error(err)
         else:
+            st.sidebar.success(f"Loaded {len(q_load)} points.")
             use_experimental = st.sidebar.checkbox("Use Loaded Data", value=True)
             if use_experimental:
                 q_meas, i_meas = q_load, i_load
-                if st.session_state['last_filename'] != uploaded_file.name:
+                if st.session_state.get('last_filename') != uploaded_file.name:
                     st.session_state['last_filename'] = uploaded_file.name
                     st.session_state['q_min'] = float(np.min(q_meas))
                     st.session_state['q_max'] = float(np.max(q_meas))
@@ -50,6 +48,7 @@ def run():
                         if res['Rg'] > 0: st.session_state['nnls_max_rg'] = float(round(5 * res['Rg'], 1))
                     st.rerun()
 
+    # Callbacks
     def update_q_max():
         if st.session_state.mean_rg > 0:
             st.session_state.q_max = round(10.0 / st.session_state.mean_rg, 2)
@@ -94,6 +93,7 @@ def run():
     
     q_sim, i_sim, i_2d_final, r_vals, pdf_vals = run_simulation_core(params)
     
+    # Active Data
     if use_experimental and q_meas is not None:
         mask = (q_meas >= q_min) & (q_meas <= q_max)
         q_target = q_meas[mask]
@@ -102,16 +102,25 @@ def run():
         q_target = q_sim
         i_target = i_sim
 
+    # Run Analysis
     analysis_res = perform_saxs_analysis(q_target, i_target, dist_type, mean_rg, mode_key, analysis_method, nnls_max_rg)
 
-    # ... (Visualization Code Identical to before, omitting for brevity) ...
+    # --- Visualization ---
     col_viz1, col_viz2 = st.columns(2)
+
     with col_viz1:
         if use_experimental:
-            st.subheader("Experimental Data Active"); st.info("Analyzing uploaded 1D data. 2D view disabled.")
+            st.subheader("Experimental Data Active")
+            st.info("Analyzing uploaded 1D data. 2D view disabled.")
         else:
             st.subheader("2D Detector")
-            fig_2d = go.Figure(data=go.Heatmap(z=np.log10(np.maximum(i_2d_final, 1)), x=np.linspace(-q_max, q_max, pixels), y=np.linspace(-q_max, q_max, pixels), colorscale='Jet', colorbar=dict(title='log10(I)')))
+            fig_2d = go.Figure(data=go.Heatmap(
+                z=np.log10(np.maximum(i_2d_final, 1)),
+                x=np.linspace(-q_max, q_max, pixels),
+                y=np.linspace(-q_max, q_max, pixels),
+                colorscale='Jet',
+                colorbar=dict(title='log10(I)')
+            ))
             fig_2d.update_layout(xaxis_title='qx', yaxis_title='qy', width=500, height=500, margin=dict(l=40,r=40,t=20,b=40), yaxis=dict(scaleanchor="x", scaleratio=1))
             st.plotly_chart(fig_2d)
 
@@ -138,28 +147,30 @@ def run():
 
         fig_1d.add_trace(go.Scatter(x=plot_x, y=plot_y, mode='markers', name=label_str, marker=dict(color=color_str, size=4)))
 
-        # Plot Fit Lines
-        if analysis_method == 'Tomchuk':
-             if 'I_fit_pdi' in analysis_res:
-                 fit_y_pdi = analysis_res['I_fit_pdi']
-                 fit_x = q_target
-                 if plot_type == "Guinier": fit_x = q_target**2; fit_y_pdi = np.log(np.maximum(fit_y_pdi, 1e-9))
-                 elif plot_type == "Porod": fit_y_pdi = fit_y_pdi * (q_target**4)
-                 elif plot_type == "Kratky": fit_y_pdi = fit_y_pdi * (q_target**2)
-                 fig_1d.add_trace(go.Scatter(x=fit_x, y=fit_y_pdi, mode='lines', name='PDI Fit', line=dict(color='orange', dash='dash', width=2)))
-             
-        elif 'I_fit' in analysis_res:
+        if 'I_fit' in analysis_res:
             fit_y = analysis_res['I_fit']
             fit_x = q_target
             if plot_type == "Guinier": fit_x = q_target**2; fit_y = np.log(np.maximum(fit_y, 1e-9))
             elif plot_type == "Porod": fit_y = fit_y * (q_target**4)
             elif plot_type == "Kratky": fit_y = fit_y * (q_target**2)
-            fig_1d.add_trace(go.Scatter(x=fit_x, y=fit_y, mode='lines', name='NNLS Fit', line=dict(color='orange', dash='dash', width=2)))
-            
+            fig_1d.add_trace(go.Scatter(x=fit_x, y=fit_y, mode='lines', name='Global Fit', line=dict(color='orange', dash='dash', width=2)))
+
+        if plot_type == "Guinier":
+            rg_f, g_f = analysis_res['Rg'], analysis_res['G']
+            if rg_f > 0:
+                x_line = np.linspace(0, (1.2/rg_f)**2, 50)
+                y_line = np.log(g_f) - (rg_f**2/3.0)*x_line
+                fig_1d.add_trace(go.Scatter(x=x_line, y=y_line, mode='lines', name='Guinier Linear', line=dict(color='red', dash='dot')))
+                fig_1d.update_xaxes(range=[0, (2.0/rg_f)**2])
+                fig_1d.update_yaxes(range=[np.log(g_f)-3, np.log(g_f)+0.5])
+        elif plot_type == "Porod" and analysis_method == 'Tomchuk':
+            if 'B' in analysis_res and analysis_res['B'] > 0:
+                fig_1d.add_hline(y=analysis_res['B'], line_dash="dot", line_color="red", annotation_text="B (Fit)")
+
         fig_1d.update_layout(xaxis_title=x_label, yaxis_title=y_label, xaxis_type=x_type, yaxis_type=y_type, width=500, height=450, margin=dict(l=40,r=40,t=20,b=40))
         st.plotly_chart(fig_1d)
 
-    # --- Results & Distribution Visuals (Same as before) ---
+    # --- Results & Distribution Visuals ---
     st.markdown("---"); st.subheader("Analysis Results")
     c1, c2, c3 = st.columns(3)
     input_label = "Ref (Sidebar)" if use_experimental else "Input"
@@ -169,20 +180,27 @@ def run():
         if analysis_method == 'Tomchuk':
             st.metric("Rec. p (PDI)", f"{analysis_res.get('p_rec_pdi', 0):.3f}")
             st.metric("Rec. Rg (PDI)", f"{analysis_res.get('rg_num_rec_pdi', 0):.2f} nm")
+            st.metric("Rec. p (PDI₂)", f"{analysis_res.get('p_rec_pdi2', 0):.3f}")
+            st.metric("Rec. Rg (PDI₂)", f"{analysis_res.get('rg_num_rec_pdi2', 0):.2f} nm")
         else:
-            st.metric("NNLS Mean Rg", f"{analysis_res.get('rg_num_rec', 0):.2f} nm")
+            st.metric("NNLS Mean Rg", f"{analysis_res.get('rg_num_rec', 0):.2f} nm", delta=f"{analysis_res.get('rg_num_rec', 0) - mean_rg:.2f}")
             st.metric("NNLS Width (p)", f"{analysis_res.get('p_rec', 0):.3f}")
+        if 'chi2' in analysis_res:
+            st.metric("Chi-Square (Red.)", f"{analysis_res.get('chi2', 0):.2f}")
 
     with c2:
-        st.markdown("**Fits**")
+        st.markdown("**Invariants & Fit**")
+        val_list = [f"{analysis_res.get('Rg', 0):.2f} nm", f"{analysis_res.get('G', 0):.2e}"]
+        param_list = ["Rg (Guinier)", "G"]
         if analysis_method == 'Tomchuk':
-             st.write(f"Chi2 (PDI): {analysis_res.get('chi2_pdi', 0):.4f}")
-             st.write(f"Chi2 (PDI2): {analysis_res.get('chi2_pdi2', 0):.4f}")
-        else:
-             st.write(f"Chi2: {analysis_res.get('chi2', 0):.4f}")
+            val_list.extend([f"{analysis_res.get('Q', 0):.2e}", f"{analysis_res.get('lc', 0):.2f} nm", f"{analysis_res.get('B', 0):.2e}"])
+            param_list.extend(["Q", "lc", "B"])
+        res_df = pd.DataFrame({"Parameter": param_list, "Value": val_list})
+        # Use width="stretch" to fill column
+        st.dataframe(res_df, hide_index=True, width=None) # Passing None makes it responsive in most versions or default width
 
     with c3:
-        st.markdown("**Distribution**")
+        st.markdown("**Recovered Distribution**")
         fig_dist = go.Figure()
         fig_dist.add_trace(go.Scatter(x=r_vals, y=pdf_vals, mode='lines', name=input_label, line=dict(color='gray', dash='dash')))
         
@@ -208,18 +226,12 @@ def run():
         fig_dist.update_layout(xaxis_title="Radius (nm)", yaxis_title="Prob", width=400, height=350, margin=dict(l=40,r=40,t=20,b=40))
         st.plotly_chart(fig_dist)
 
-    # --- New Download Section (Split Buttons) ---
+    # Download
     params_dict = {'mean_rg': mean_rg, 'p_val': p_val, 'dist_type': dist_type, 'mode': mode_key, 'method': analysis_method}
-    header = get_header_string(params_dict, analysis_res)
-    
-    # 1. Intensity CSV
-    csv_intensity = create_intensity_csv(header, q_target, i_target, analysis_res, analysis_method)
-    
-    # 2. Distribution CSV
-    csv_dist = create_distribution_csv(header, r_vals, pdf_vals, rec_dists_dl, params_dict)
+    # Removed the line creating a single download_data variable. We now use the split functions.
     
     c_d1, c_d2 = st.columns(2)
     with c_d1:
-        st.download_button("Download Intensity Data (.csv)", csv_intensity, "saxs_intensity.csv", "text/csv", use_container_width=True)
+        st.download_button("Download Intensity Data (.csv)", create_intensity_csv(get_header_string(params_dict, analysis_res), q_target, i_target, analysis_res, analysis_method), "saxs_intensity.csv", "text/csv") 
     with c_d2:
-        st.download_button("Download Distribution Data (.csv)", csv_dist, "saxs_distribution.csv", "text/csv", use_container_width=True)
+        st.download_button("Download Distribution Data (.csv)", create_distribution_csv(get_header_string(params_dict, analysis_res), r_vals, pdf_vals, rec_dists_dl, params_dict), "saxs_distribution.csv", "text/csv")
