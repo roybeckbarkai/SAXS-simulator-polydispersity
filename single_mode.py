@@ -59,8 +59,8 @@ def run():
             st.session_state.nnls_max_rg = float(round(st.session_state.mean_rg * (1 + 6 * p), 1))
 
     st.sidebar.header("Sample Parameters")
-    mean_rg = st.sidebar.number_input("Mean Rg (nm)", min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', on_change=update_q_max_and_basis)
-    p_val = st.sidebar.number_input("Polydispersity (p)", min_value=0.01, max_value=6.0, step=0.01, key='p_val', on_change=update_q_max_and_basis)
+    mean_rg = st.sidebar.number_input("Mean Rg (nm)",value=2.0, min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', on_change=update_q_max_and_basis)
+    p_val = st.sidebar.number_input("Polydispersity (p)", value= 0.3, min_value=0.01, max_value=6.0, step=0.01, key='p_val', on_change=update_q_max_and_basis)
     dist_label = "Distribution Type" if mode_key == 'Sphere' else "Conformational Distribution"
     dist_type = st.sidebar.selectbox(dist_label, ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'], key='dist_type')
 
@@ -72,7 +72,7 @@ def run():
     c_q1, c_q2 = st.sidebar.columns(2)
     with c_q1: q_min = st.sidebar.number_input("Min q", min_value=0.0, step=0.01, key='q_min')
     with c_q2: q_max = st.sidebar.number_input("Max q", min_value=0.01, step=0.1, key='q_max')
-    n_bins = st.sidebar.number_input("1D Bins", min_value=10, step=10, key='n_bins')
+    n_bins = st.sidebar.number_input("1D Bins", value=256, min_value=10, step=10, key='n_bins')
     binning_mode = st.sidebar.selectbox("Binning Mode", ["Logarithmic", "Linear"], key='binning_mode')
     smearing = st.sidebar.number_input("Smearing (px)", value=2.0, step=0.5, key='smearing')
 
@@ -104,6 +104,9 @@ def run():
 
     # Run Analysis
     analysis_res = perform_saxs_analysis(q_target, i_target, dist_type, mean_rg, mode_key, analysis_method, nnls_max_rg)
+
+    # --- Define Input Label EARLY for use in all columns ---
+    input_label = "Ref (Sidebar)" if use_experimental else "Input"
 
     # --- Visualization ---
     col_viz1, col_viz2 = st.columns(2)
@@ -173,7 +176,7 @@ def run():
     # --- Results & Distribution Visuals ---
     st.markdown("---"); st.subheader("Analysis Results")
     c1, c2, c3 = st.columns(3)
-    input_label = "Ref (Sidebar)" if use_experimental else "Input"
+    
     with c1:
         st.markdown("**Parameters**")
         st.metric(input_label + " Rg", f"{mean_rg:.2f} nm")
@@ -196,12 +199,12 @@ def run():
             val_list.extend([f"{analysis_res.get('Q', 0):.2e}", f"{analysis_res.get('lc', 0):.2f} nm", f"{analysis_res.get('B', 0):.2e}"])
             param_list.extend(["Q", "lc", "B"])
         res_df = pd.DataFrame({"Parameter": param_list, "Value": val_list})
-        # Use width="stretch" to fill column
-        st.dataframe(res_df, hide_index=True, width=None) # Passing None makes it responsive in most versions or default width
+        st.dataframe(res_df, hide_index=True, width='stretch')
 
     with c3:
         st.markdown("**Recovered Distribution**")
         fig_dist = go.Figure()
+        # Input PDF (dashed gray)
         fig_dist.add_trace(go.Scatter(x=r_vals, y=pdf_vals, mode='lines', name=input_label, line=dict(color='gray', dash='dash')))
         
         rec_dists_dl = {}
@@ -228,7 +231,6 @@ def run():
 
     # Download
     params_dict = {'mean_rg': mean_rg, 'p_val': p_val, 'dist_type': dist_type, 'mode': mode_key, 'method': analysis_method}
-    # Removed the line creating a single download_data variable. We now use the split functions.
     
     c_d1, c_d2 = st.columns(2)
     with c_d1:

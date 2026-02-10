@@ -1,4 +1,5 @@
 # File: analysis_utils.py
+# Last Updated: Tuesday, February 10, 2026
 # Description: Utilities for parsing data, performing Tomchuk analysis, and NNLS distribution recovery.
 
 import numpy as np
@@ -87,15 +88,11 @@ def solve_p_tomchuk(target_val, index_type, dist_type):
     except: return 0.0
 
 def get_calculated_mean_rg_num(rg_scat, p, dist_type):
-    # Returns Number Average Rg based on Scattering Average Rg
     if not rg_scat or rg_scat <= 0: return 0
     if p <= 0: return rg_scat
-    
     m6 = get_normalized_moment(6, p, dist_type)
     m8 = get_normalized_moment(8, p, dist_type)
     if m6 <= 0: return 0
-    
-    # ratio = Rg_scat / Rg_num_theory
     ratio = np.sqrt(m8 / m6)
     return rg_scat / ratio
 
@@ -196,12 +193,9 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type, initial_rg_guess, mode, metho
         limit = 1.0 if mode == 'IDP' else 1.3
         mask = (q_exp * rg_fit) < limit
         mask = mask & (q_exp > 0) & (i_exp > 0)
-        
         if np.sum(mask) < 4: break
-        
         x_fit = q_exp[mask]**2
         y_fit = np.log(i_exp[mask])
-        
         try:
             slope, intercept = np.polyfit(x_fit, y_fit, 1)
             if slope >= 0: break 
@@ -247,6 +241,7 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type, initial_rg_guess, mode, metho
             p_rec_pdi = solve_p_tomchuk(pdi_val, 'PDI', dist_type)
             p_rec_pdi2 = solve_p_tomchuk(pdi2_val, 'PDI2', dist_type)
             
+            # Rg Recovery
             rg_num_rec = get_calculated_mean_rg_num(rg_fit, p_rec_pdi, dist_type)
             rg_num_rec_2 = get_calculated_mean_rg_num(rg_fit, p_rec_pdi2, dist_type)
 
@@ -276,7 +271,6 @@ def perform_saxs_analysis(q_exp, i_exp, dist_type, initial_rg_guess, mode, metho
             results['I_fit_pdi2'] = i_fit_pdi2
             results['chi2_pdi2'] = chi2_pdi2
             
-            # For general display, use PDI as "Main" fit
             results['I_fit'] = i_fit_pdi
             results['chi2'] = chi2_pdi
             
@@ -365,7 +359,6 @@ def create_intensity_csv(header, q, i_input, analysis_res, method):
 
 def create_distribution_csv(header, r, input_dist, recovered_dists, params):
     df = pd.DataFrame({'Radius': r})
-    # Add Input label
     label = "Reference_PDF"
     if input_dist is not None and len(input_dist) == len(r):
         df[label] = input_dist
@@ -377,7 +370,6 @@ def create_distribution_csv(header, r, input_dist, recovered_dists, params):
             df['PDI2_Recovered_PDF'] = recovered_dists['pdi2']
     else: 
         if 'nnls_r' in recovered_dists:
-             # Interpolate NNLS weights/PDF to the Radius grid
              df['NNLS_Recovered_PDF'] = np.interp(r, recovered_dists['nnls_r'], recovered_dists['nnls_w'], left=0, right=0)
              
     return header + df.to_csv(index=False)

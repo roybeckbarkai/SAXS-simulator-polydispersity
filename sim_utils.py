@@ -1,5 +1,6 @@
-# File: sim_utils.py 
-# Description: Contains physics models (form factors), size distributions, and the core simulation engine.   
+# File: sim_utils.py
+# Last Updated: Tuesday, February 10, 2026
+# Description: Physics models, distribution functions, and core simulation engine.
 
 import numpy as np
 from scipy.special import gamma, factorial
@@ -48,7 +49,6 @@ def get_distribution(dist_type, r, mean_r, p):
             norm = (b**a) / gamma(a)
         except:
             norm = 1.0
-            
         with np.errstate(over='ignore', invalid='ignore'):
              pdf = norm * (r**z) * np.exp(-b * r)
         return np.nan_to_num(pdf)
@@ -112,10 +112,10 @@ def run_simulation_core(params):
     p_val = float(params['p_val'])
     dist_type = params['dist_type']
     mode_key = params['mode']
-    pixels = int(params['pixels'])
+    pixels = int(float(params['pixels']))
     q_max = float(params['q_max'])
     q_min = float(params['q_min'])
-    n_bins = int(params['n_bins'])
+    n_bins = int(float(params['n_bins']))
     smearing = float(params['smearing'])
     flux = float(params['flux'])
     noise = bool(params['noise'])
@@ -172,7 +172,8 @@ def run_simulation_core(params):
     else:
         i_2d_final = i_2d_scaled
 
-    if binning_mode == "Linear":
+    # Radial Averaging
+    if binning_mode == "Linear" or binning_mode == "Lin":
         sim_bin_width = (q_max - q_min) / n_bins
         if sim_bin_width <= 0: sim_bin_width = q_max / n_bins
         r_indices = ((qv_r - q_min) / sim_bin_width).astype(int).ravel()
@@ -183,7 +184,7 @@ def run_simulation_core(params):
         nonzero = nr > 0
         radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
         q_sim = q_min + (np.arange(n_bins) + 0.5) * sim_bin_width
-    else:
+    else: # Logarithmic
         q_min_log = max(q_min, 1e-4)
         edges = np.logspace(np.log10(q_min_log), np.log10(q_max), n_bins + 1)
         r_vals_flat = qv_r.ravel()
@@ -199,4 +200,5 @@ def run_simulation_core(params):
         q_sim = np.sqrt(edges[:-1] * edges[1:])
 
     valid_sim = radial_prof > 0
+    # Return non-zero points for analysis
     return q_sim[valid_sim], radial_prof[valid_sim], i_2d_final, r_vals, pdf_vals

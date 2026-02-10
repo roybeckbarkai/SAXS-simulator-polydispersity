@@ -28,7 +28,7 @@ REV_BIN_MAP = {v: k for k, v in BIN_MAP.items()}
 
 def expand_batch_parameters(df):
     all_jobs = []
-    # Force conversion to string to ensure literal_eval works even if pandas inferred types differently
+    # Force conversion to string
     df = df.astype(str)
     
     for _, row in df.iterrows():
@@ -75,8 +75,6 @@ def run():
     if curr_mode == 'Sphere':
          curr_method = "NNLS" 
 
-    # Construct Default Row
-    # Note: We cast everything to strings to ensure the data_editor treats columns as TextColumn.
     default_row = {
         "mode (S/P)": str(REV_MODE_MAP.get(curr_mode, 'S')),
         "dist (G/L/S/B/T/U)": str(REV_DIST_MAP.get(curr_dist, 'G')),
@@ -102,7 +100,6 @@ def run():
         uploaded_batch = st.file_uploader("Upload Batch CSV", type=['csv'])
         if uploaded_batch:
             try: 
-                # Read as string to preserve list syntax
                 st.session_state.batch_df = pd.read_csv(uploaded_batch, dtype=str)
                 st.success("Batch Loaded")
             except: st.error("Invalid CSV")
@@ -114,7 +111,7 @@ def run():
     st.info("Tip: Enter lists like `[0.1, 0.3]` in parameter cells to run combinations. Use codes: S=Sphere, P=Polymer | G=Gaussian... | T=Tomchuk, N=NNLS")
     
     df_to_edit = st.session_state.batch_df.astype(str)
-    # Using 'width'='stretch' for modern streamlit or omitting deprecated use_container_width
+    # Using 'width'='stretch' logic for data editor if version supports, otherwise just default
     edited_df = st.data_editor(df_to_edit, num_rows="dynamic")
     st.session_state.batch_df = edited_df
 
@@ -127,7 +124,7 @@ def run():
         summary_results = []
         
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("batch_summary.csv", expanded_df.to_csv(index=False))
+            zf.writestr("batch_summary_expanded.csv", expanded_df.to_csv(index=False))
             
             for i, row in expanded_df.iterrows():
                 row_dict = row.to_dict()
@@ -150,10 +147,8 @@ def run():
                         'nnls_max_rg': float(row_dict['nnls_max_rg'])
                     }
 
-                    # Run Simulation
                     q_sim, i_sim, _, r_vals, pdf_vals = run_simulation_core(params)
                     
-                    # Run Analysis
                     res = perform_saxs_analysis(q_sim, i_sim, 
                                                 params['dist_type'], 
                                                 params['mean_rg'], 
@@ -161,7 +156,6 @@ def run():
                                                 params['method'], 
                                                 params['nnls_max_rg'])
                     
-                    # Recovery Distributions
                     rec_dists = {}
                     if params['method'] == 'Tomchuk':
                          m_pdi = res.get('rg_num_rec_pdi', params['mean_rg']) * np.sqrt(5.0/3.0)
@@ -175,7 +169,6 @@ def run():
                          rec_dists['nnls_r'] = res['nnls_r']
                          rec_dists['nnls_w'] = res['nnls_w']
 
-                    # Generate Files
                     header = get_header_string(params, res)
                     intensity_csv = create_intensity_csv(header, q_sim, i_sim, res, params['method'])
                     dist_csv = create_distribution_csv(header, r_vals, pdf_vals, rec_dists, params)
@@ -183,7 +176,6 @@ def run():
                     zf.writestr(f"run_{i}_intensity.csv", intensity_csv)
                     zf.writestr(f"run_{i}_distribution.csv", dist_csv)
                     
-                    # Summary Data
                     summary_row = row_dict.copy()
                     
                     rec_p = res.get('p_rec', 0) if params['method'] == 'NNLS' else res.get('p_rec_pdi', 0)
@@ -227,7 +219,6 @@ def run():
                 summary_df = pd.DataFrame(summary_results)
                 zf.writestr("batch_results_summary.csv", summary_df.to_csv(index=False))
 
-        # --- Plotting Results ---
         if summary_results:
             st.success("Batch Complete!")
             st.markdown("### Batch Analysis Visualization")
