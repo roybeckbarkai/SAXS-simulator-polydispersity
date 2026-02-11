@@ -59,7 +59,11 @@ def run():
             st.session_state.nnls_max_rg = float(round(st.session_state.mean_rg * (1 + 6 * p), 1))
 
     st.sidebar.header("Sample Parameters")
-    mean_rg = st.sidebar.number_input("Mean Rg (nm)",value=2.0, min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', on_change=update_q_max_and_basis)
+    
+    # Edit: Dynamic label for mean size input
+    size_input_label = "Mean Radius (R) (nm)" if mode_key == 'Sphere' else "Mean Rg (nm)"
+    mean_rg = st.sidebar.number_input(size_input_label, value=2.0, min_value=0.5, max_value=50.0, step=0.5, key='mean_rg', on_change=update_q_max_and_basis)
+    
     p_val = st.sidebar.number_input("Polydispersity (p)", value= 0.3, min_value=0.01, max_value=6.0, step=0.01, key='p_val', on_change=update_q_max_and_basis)
     dist_label = "Distribution Type" if mode_key == 'Sphere' else "Conformational Distribution"
     dist_type = st.sidebar.selectbox(dist_label, ['Gaussian', 'Lognormal', 'Schulz', 'Boltzmann', 'Triangular', 'Uniform'], key='dist_type')
@@ -179,14 +183,17 @@ def run():
     
     with c1:
         st.markdown("**Parameters**")
-        st.metric(input_label + " Rg", f"{mean_rg:.2f} nm")
+        # Edit: Dynamic metric label for analysis results
+        metric_label = "Radius" if mode_key == 'Sphere' else "Rg"
+        st.metric(f"{input_label} {metric_label}", f"{mean_rg:.2f} nm")
+        
         if analysis_method == 'Tomchuk':
             st.metric("Rec. p (PDI)", f"{analysis_res.get('p_rec_pdi', 0):.3f}")
             st.metric("Rec. Rg (PDI)", f"{analysis_res.get('rg_num_rec_pdi', 0):.2f} nm")
             st.metric("Rec. p (PDI₂)", f"{analysis_res.get('p_rec_pdi2', 0):.3f}")
             st.metric("Rec. Rg (PDI₂)", f"{analysis_res.get('rg_num_rec_pdi2', 0):.2f} nm")
         else:
-            st.metric("NNLS Mean Rg", f"{analysis_res.get('rg_num_rec', 0):.2f} nm", delta=f"{analysis_res.get('rg_num_rec', 0) - mean_rg:.2f}")
+            st.metric(f"NNLS Mean {metric_label}", f"{analysis_res.get('rg_num_rec', 0):.2f} nm", delta=f"{analysis_res.get('rg_num_rec', 0) - mean_rg:.2f}")
             st.metric("NNLS Width (p)", f"{analysis_res.get('p_rec', 0):.3f}")
         if 'chi2' in analysis_res:
             st.metric("Chi-Square (Red.)", f"{analysis_res.get('chi2', 0):.2f}")
@@ -226,7 +233,9 @@ def run():
                 rec_dists_dl['nnls_r'] = analysis_res['nnls_r']
                 rec_dists_dl['nnls_w'] = analysis_res['nnls_w']
         
-        fig_dist.update_layout(xaxis_title="Radius (nm)", yaxis_title="Prob", width=400, height=350, margin=dict(l=40,r=40,t=20,b=40))
+        # Edit: Dynamic axis title for distribution plot
+        dist_x_axis = "Radius (nm)" if mode_key == 'Sphere' else "Rg (nm)"
+        fig_dist.update_layout(xaxis_title=dist_x_axis, yaxis_title="Prob", width=400, height=350, margin=dict(l=40,r=40,t=20,b=40))
         st.plotly_chart(fig_dist)
 
     # Download
@@ -237,3 +246,6 @@ def run():
         st.download_button("Download Intensity Data (.csv)", create_intensity_csv(get_header_string(params_dict, analysis_res), q_target, i_target, analysis_res, analysis_method), "saxs_intensity.csv", "text/csv") 
     with c_d2:
         st.download_button("Download Distribution Data (.csv)", create_distribution_csv(get_header_string(params_dict, analysis_res), r_vals, pdf_vals, rec_dists_dl, params_dict), "saxs_distribution.csv", "text/csv")
+
+if __name__ == "__main__":
+    run()
