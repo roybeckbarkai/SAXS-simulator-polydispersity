@@ -18,245 +18,225 @@ from analysis_utils import perform_saxs_analysis, get_header_string, create_inte
 MODE_MAP = {'S': 'Sphere', 'P': 'IDP'}
 DIST_MAP = {'G': 'Gaussian', 'L': 'Lognormal', 'S': 'Schulz', 'B': 'Boltzmann', 'T': 'Triangular', 'U': 'Uniform'}
 METHOD_MAP = {'T': 'Tomchuk', 'N': 'NNLS'}
-BIN_MAP = {'Log': 'Logarithmic', 'Lin': 'Linear'}
 
 # Reverse mappings for initialization
 REV_MODE_MAP = {v: k for k, v in MODE_MAP.items()}
 REV_DIST_MAP = {v: k for k, v in DIST_MAP.items()}
 REV_METHOD_MAP = {v: k for k, v in METHOD_MAP.items()}
-REV_BIN_MAP = {v: k for k, v in BIN_MAP.items()}
 
 def expand_batch_parameters(df):
+    """
+    Expands rows containing lists [val1, val2] into individual jobs.
+    """
     all_jobs = []
-    # Force conversion to string
-    df = df.astype(str)
+    # Force conversion to string to handle potential mixed types
+    temp_df = df.astype(str)
     
-    for _, row in df.iterrows():
-        base_params = row.to_dict()
-        list_params = {}
-        single_params = {}
-        
-        for k, v in base_params.items():
-            val_str = str(v).strip()
+    for _, row in temp_df.iterrows():
+        keys = row.index.tolist()
+        vals = []
+        for k in keys:
+            val_str = row[k].strip()
             if val_str.startswith('[') and val_str.endswith(']'):
                 try:
-                    val_list = ast.literal_eval(val_str)
-                    if isinstance(val_list, list):
-                        list_params[k] = val_list
-                        continue
+                    parsed_list = ast.literal_eval(val_str)
+                    vals.append(parsed_list if isinstance(parsed_list, list) else [parsed_list])
                 except:
-                    pass
-            single_params[k] = v
-            
-        if not list_params:
-            all_jobs.append(single_params)
-        else:
-            keys = list(list_params.keys())
-            vals = list(list_params.values())
-            for combination in itertools.product(*vals):
-                job = single_params.copy()
-                for k, val in zip(keys, combination):
-                    job[k] = val
-                all_jobs.append(job)
-    
-    return pd.DataFrame(all_jobs)
+                    vals.append([val_str])
+            else:
+                vals.append([val_str])
+        
+        for combo in itertools.product(*vals):
+            all_jobs.append(dict(zip(keys, combo)))
+    return all_jobs
 
 def run():
-    st.header("Batch Simulation Runner")
-    if st.button("🏠 Return to Home"):
+    st.title("Batch Simulation & Recovery Analysis")
+    
+    if st.sidebar.button("🏠 Return to Home"):
         st.session_state.page = 'home'
         st.rerun()
 
-    # Determine default short codes based on current session
-    curr_mode = st.session_state.get('mode_key', 'Sphere')
-    curr_dist = st.session_state.get('dist_type', 'Gaussian')
-    
-    curr_method = "NNLS"
-    if curr_mode == 'Sphere':
-         curr_method = "NNLS" 
+    st.markdown("""
+    Define a sweep of simulations. Enter single values or lists like `[4.0, 5.0, 6.0]`.
+    - **Mode**: S (Sphere), P (IDP) | **Dist**: G, L, S, B, T, U | **Method**: T (Tomchuk), N (NNLS)
+    """)
 
-    default_row = {
-        "mode (S/P)": str(REV_MODE_MAP.get(curr_mode, 'S')),
-        "dist (G/L/S/B/T/U)": str(REV_DIST_MAP.get(curr_dist, 'G')),
-        "mean_rg": str(st.session_state.get('mean_rg', 4.0)),
-        "p_val": str(st.session_state.get('p_val', 0.3)),
-        "pixels": str(1024),
-        "q_min": str(0.0),
-        "q_max": str(st.session_state.get('q_max', 2.5)),
-        "n_bins": str(512),
-        "binning (Log/Lin)": "Log",
-        "smearing": str(2.0),
-        "flux": str(1e6),
-        "noise": "True",
-        "method (T/N)": str(REV_METHOD_MAP.get(curr_method, 'N')),
-        "nnls_max_rg": str(st.session_state.get('nnls_max_rg', 30.0))
-    }
-    
     if 'batch_df' not in st.session_state:
-        st.session_state.batch_df = pd.DataFrame([default_row])
+        st.session_state.batch_df = pd.DataFrame([{
+            "mode": REV_MODE_MAP.get(st.session_state.get('mode_key', 'Sphere'), 'S'),
+            "mean_rg": str(st.session_state.get('mean_rg', 4.0)),
+            "p_val": "[0.1, 0.2, 0.3]",
+            "dist": REV_DIST_MAP.get(st.session_state.get('dist_type', 'Gaussian'), 'G'),
+            "method": "T",
+            "smearing": "0.0",
+            "q_max": str(st.session_state.get('q_max', 2.5)),
+            "n_bins": str(st.session_state.get('n_bins', 512))
+        }])
 
-    c_b1, c_b2 = st.columns(2)
-    with c_b1:
-        uploaded_batch = st.file_uploader("Upload Batch CSV", type=['csv'])
-        if uploaded_batch:
-            try: 
-                st.session_state.batch_df = pd.read_csv(uploaded_batch, dtype=str)
-                st.success("Batch Loaded")
-            except: st.error("Invalid CSV")
-    with c_b2:
-        st.download_button("Download Template", 
-                           pd.DataFrame([default_row]).to_csv(index=False), 
-                           "batch_template.csv", "text/csv")
-        
-    st.info("Tip: Enter lists like `[0.1, 0.3]` in parameter cells to run combinations. Use codes: S=Sphere, P=Polymer | G=Gaussian... | T=Tomchuk, N=NNLS")
-    
-    df_to_edit = st.session_state.batch_df.astype(str)
-    # Using 'width'='stretch' logic for data editor if version supports, otherwise just default
-    edited_df = st.data_editor(df_to_edit, num_rows="dynamic")
+    # Fixed: Use width='stretch'
+    edited_df = st.data_editor(st.session_state.batch_df, num_rows="dynamic", width="stretch")
     st.session_state.batch_df = edited_df
 
-    if st.button("Execute Batch Queue"):
-        expanded_df = expand_batch_parameters(edited_df)
-        st.write(f"Queue size: {len(expanded_df)} simulations")
+    # Fixed: Use width='stretch'
+    if st.button("🚀 Execute Batch Queue", width='stretch'):
+        jobs = expand_batch_parameters(edited_df)
+        n_jobs = len(jobs)
         
+        if n_jobs == 0:
+            st.error("No jobs found in the queue.")
+            return
+
         progress_bar = st.progress(0)
+        status_text = st.empty()
+        results_list = []
         zip_buffer = io.BytesIO()
-        summary_results = []
-        
-        with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("batch_summary_expanded.csv", expanded_df.to_csv(index=False))
-            
-            for i, row in expanded_df.iterrows():
-                row_dict = row.to_dict()
+
+        with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+            for i, job in enumerate(jobs):
+                status_text.text(f"Processing Job {i+1}/{n_jobs}...")
                 
+                # Extract and parse params
                 try:
-                    params = {
-                        'mode': MODE_MAP.get(row_dict.get('mode (S/P)', 'S'), 'Sphere'),
-                        'dist_type': DIST_MAP.get(row_dict.get('dist (G/L/S/B/T/U)', 'G'), 'Gaussian'),
-                        'mean_rg': float(row_dict['mean_rg']),
-                        'p_val': float(row_dict['p_val']),
-                        'pixels': int(float(row_dict['pixels'])),
-                        'q_min': float(row_dict['q_min']),
-                        'q_max': float(row_dict['q_max']),
-                        'n_bins': int(float(row_dict['n_bins'])),
-                        'binning_mode': BIN_MAP.get(row_dict.get('binning (Log/Lin)', 'Log'), 'Logarithmic'),
-                        'smearing': float(row_dict['smearing']),
-                        'flux': float(row_dict['flux']),
-                        'noise': str(row_dict['noise']).lower() in ['true', '1', 't', 'yes'],
-                        'method': METHOD_MAP.get(row_dict.get('method (T/N)', 'N'), 'NNLS'),
-                        'nnls_max_rg': float(row_dict['nnls_max_rg'])
+                    m_rg = float(job.get('mean_rg', 4.0))
+                    p_v = float(job.get('p_val', 0.2))
+                    smear = float(job.get('smearing', 0.0))
+                    q_max = float(job.get('q_max', 2.5))
+                    n_bins = int(float(job.get('n_bins', 512)))
+                    mode_key = MODE_MAP.get(job.get('mode', 'S'), 'Sphere')
+                    dist_type = DIST_MAP.get(job.get('dist', 'G'), 'Gaussian')
+                    method = METHOD_MAP.get(job.get('method', 'T'), 'Tomchuk')
+
+                    # CONSTRUCTION OF SIMULATION PARAMETERS DICTIONARY
+                    sim_params = {
+                        'mean_rg': m_rg,
+                        'mean_r': m_rg,          
+                        'p_val': p_v,
+                        'p': p_v,                
+                        'dist_type': dist_type,
+                        'dist': dist_type,       
+                        'q_min': 0.01,
+                        'q_max': q_max,
+                        'n_bins': n_bins,
+                        'smearing_sigma': smear,
+                        'smearing': smear,       
+                        'flux': 1e8,
+                        'mode_key': mode_key,
+                        'mode': mode_key,        
+                        'pixels': 401,           
+                        'noise_level': 0.0,      
+                        'noise': 0.0,            
+                        'binning_mode': 'Log',   
+                        'binning': 'Log'         
                     }
 
-                    q_sim, i_sim, _, r_vals, pdf_vals = run_simulation_core(params)
-                    
-                    res = perform_saxs_analysis(q_sim, i_sim, 
-                                                params['dist_type'], 
-                                                params['mean_rg'], 
-                                                params['mode'], 
-                                                params['method'], 
-                                                params['nnls_max_rg'])
-                    
-                    rec_dists = {}
-                    if params['method'] == 'Tomchuk':
-                         m_pdi = res.get('rg_num_rec_pdi', params['mean_rg']) * np.sqrt(5.0/3.0)
-                         if m_pdi > 0:
-                             rec_dists['pdi'] = get_distribution(params['dist_type'], r_vals, m_pdi, res.get('p_rec_pdi', 0))
-                         
-                         m_pdi2 = res.get('rg_num_rec_pdi2', params['mean_rg']) * np.sqrt(5.0/3.0)
-                         if m_pdi2 > 0:
-                             rec_dists['pdi2'] = get_distribution(params['dist_type'], r_vals, m_pdi2, res.get('p_rec_pdi2', 0))
-                    elif 'nnls_r' in res:
-                         rec_dists['nnls_r'] = res['nnls_r']
-                         rec_dists['nnls_w'] = res['nnls_w']
+                    # Execute Core Simulation
+                    raw_res = run_simulation_core(sim_params)
 
-                    header = get_header_string(params, res)
-                    intensity_csv = create_intensity_csv(header, q_sim, i_sim, res, params['method'])
-                    dist_csv = create_distribution_csv(header, r_vals, pdf_vals, rec_dists, params)
-                    
-                    zf.writestr(f"run_{i}_intensity.csv", intensity_csv)
-                    zf.writestr(f"run_{i}_distribution.csv", dist_csv)
-                    
-                    summary_row = row_dict.copy()
-                    
-                    rec_p = res.get('p_rec', 0) if params['method'] == 'NNLS' else res.get('p_rec_pdi', 0)
-                    rec_rg = res.get('rg_num_rec', 0) if params['method'] == 'NNLS' else res.get('rg_num_rec_pdi', 0)
-                    
-                    rec_p_2 = res.get('p_rec_pdi2', 0) if params['method'] == 'Tomchuk' else 0
-                    rec_rg_2 = res.get('rg_num_rec_pdi2', 0) if params['method'] == 'Tomchuk' else 0
-
-                    p_true = params['p_val']
-                    rg_true = params['mean_rg']
-                    
-                    err_p = (rec_p - p_true)/p_true if p_true != 0 else 0
-                    err_rg = (rec_rg - rg_true)/rg_true if rg_true != 0 else 0
-
-                    summary_row.update({
-                        'Recovered_p': rec_p,
-                        'Recovered_Rg': rec_rg,
-                        'Rel_Err_p': err_p,
-                        'Rel_Err_Rg': err_rg,
-                        'Chi2': res.get('chi2', 0)
-                    })
-                    
-                    if params['method'] == 'Tomchuk':
-                        err_p2 = (rec_p_2 - p_true)/p_true if p_true != 0 else 0
-                        err_rg2 = (rec_rg_2 - rg_true)/rg_true if rg_true != 0 else 0
-                        summary_row.update({
-                             'Recovered_p_PDI2': rec_p_2,
-                             'Recovered_Rg_PDI2': rec_rg_2,
-                             'Rel_Err_p_PDI2': err_p2,
-                             'Rel_Err_Rg_PDI2': err_rg2,
-                        })
-
-                    summary_results.append(summary_row)
+                    # ADAPTER: Convert tuple result to dictionary if necessary
+                    # The error "tuple indices must be integers" happens because 
+                    # run_simulation_core returns (q, i, r, pdf) instead of a dict.
+                    if isinstance(raw_res, tuple):
+                        if len(raw_res) >= 4:
+                            sim_res = {
+                                'q': raw_res[0],
+                                'i_obs': raw_res[1],
+                                'r_dist': raw_res[2],
+                                'pdf_dist': raw_res[3]
+                            }
+                        elif len(raw_res) == 2:
+                            sim_res = {
+                                'q': raw_res[0],
+                                'i_obs': raw_res[1],
+                                'r_dist': None,
+                                'pdf_dist': None
+                            }
+                        else:
+                            raise ValueError(f"Unexpected tuple length from simulation: {len(raw_res)}")
+                    else:
+                        sim_res = raw_res
 
                 except Exception as e:
-                    zf.writestr(f"run_{i}_error.txt", str(e))
-                
-                progress_bar.progress((i + 1) / len(expanded_df))
-            
-            if summary_results:
-                summary_df = pd.DataFrame(summary_results)
-                zf.writestr("batch_results_summary.csv", summary_df.to_csv(index=False))
+                    st.error(f"Simulation failed for job {i+1}: {e}")
+                    break
 
-        if summary_results:
-            st.success("Batch Complete!")
-            st.markdown("### Batch Analysis Visualization")
-            
-            res_df = pd.DataFrame(summary_results)
-            for col in res_df.columns:
-                res_df[col] = pd.to_numeric(res_df[col], errors='ignore')
-            
-            result_cols = ['Recovered_p', 'Recovered_Rg', 'Rel_Err_p', 'Rel_Err_Rg', 'Chi2', 
-                           'Recovered_p_PDI2', 'Recovered_Rg_PDI2', 'Rel_Err_p_PDI2', 'Rel_Err_Rg_PDI2']
-            varying_cols = [c for c in res_df.columns if res_df[c].nunique() > 1 and c not in result_cols]
-            
-            if varying_cols:
-                x_axis = st.selectbox("Select X-Axis Variable", varying_cols, index=0)
-            else:
-                x_axis = res_df.columns[0]
-
-            tab1, tab2 = st.tabs(["Rg Recovery Error", "Polydispersity (p) Error"])
-            
-            with tab1:
+                # Execute Analysis
                 try:
-                    fig_rg = px.scatter(res_df, x=x_axis, y="Rel_Err_Rg", 
-                                        color="method (T/N)", hover_data=["mean_rg", "p_val", "smearing"],
-                                        title=f"Relative Error in Rg vs {x_axis}")
-                    fig_rg.add_hline(y=0, line_dash="dash", line_color="gray")
-                    st.plotly_chart(fig_rg) 
-                except Exception as e:
-                    st.warning(f"Could not plot Rg error: {e}")
-                
-            with tab2:
-                try:
-                    fig_p = px.scatter(res_df, x=x_axis, y="Rel_Err_p", 
-                                       color="method (T/N)", hover_data=["mean_rg", "p_val", "smearing"],
-                                       title=f"Relative Error in p vs {x_axis}")
-                    fig_p.add_hline(y=0, line_dash="dash", line_color="gray")
-                    st.plotly_chart(fig_p) 
-                except Exception as e:
-                     st.warning(f"Could not plot p error: {e}")
+                    analysis_res = perform_saxs_analysis(
+                        q=sim_res['q'], i_obs=sim_res['i_obs'], 
+                        method=method, mode_key=mode_key,
+                        nnls_max_rg=st.session_state.get('nnls_max_rg', 30.0)
+                    )
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.download_button("Download Batch Results (ZIP)", zip_buffer.getvalue(), f"saxs_batch_{timestamp}.zip", "application/zip")
+                    rg_rec = analysis_res.get('rg_rec', np.nan)
+                    p_rec = analysis_res.get('p_rec', np.nan)
+                    err_rg = ((rg_rec - m_rg) / m_rg) if m_rg != 0 else np.nan
+                    err_p = ((p_rec - p_v) / p_v) if p_v != 0 else np.nan
+
+                    res_entry = {
+                        "Job_ID": i + 1, "mode": mode_key, "dist": dist_type, "method": method,
+                        "mean_rg": m_rg, "p_val": p_v, "smearing": smear,
+                        "Rg_Rec": rg_rec, "p_Rec": p_rec,
+                        "Rel_Err_Rg": err_rg, "Rel_Err_p": err_p, "Chi2": analysis_res.get('chi2', np.nan)
+                    }
+                    results_list.append(res_entry)
+
+                    prefix = f"job_{i+1:03d}_{mode_key}_{dist_type}_{m_rg}nm"
+                    header = get_header_string(m_rg, p_v, dist_type, analysis_res)
+                    zip_file.writestr(f"{prefix}_int.csv", create_intensity_csv(header, sim_res['q'], sim_res['i_obs'], analysis_res, method))
+                    zip_file.writestr(f"{prefix}_dist.csv", create_distribution_csv(header, sim_res['r_dist'], sim_res['pdf_dist'], analysis_res, {"method": method}))
+                
+                except Exception as e:
+                    st.error(f"Analysis failed for job {i+1}: {e}")
+                    break
+
+                progress_bar.progress((i + 1) / n_jobs)
+
+            if results_list:
+                summary_df = pd.DataFrame(results_list)
+                zip_file.writestr("summary_report.csv", summary_df.to_csv(index=False))
+                st.session_state.batch_results_df = summary_df
+                st.session_state.batch_zip = zip_buffer.getvalue()
+
+        status_text.success(f"Batch completed!")
+
+    if 'batch_results_df' in st.session_state:
+        res_df = st.session_state.batch_results_df
+        st.divider()
+        st.subheader("Results Summary")
+        
+        # Fixed: Use width='stretch'
+        st.dataframe(res_df, width="stretch")
+
+        # Fixed: Use width='stretch'
+        st.download_button(
+            label="📥 Download Full Batch Results (ZIP)",
+            data=st.session_state.batch_zip,
+            file_name=f"saxs_batch_{datetime.now().strftime('%H%M%S')}.zip",
+            mime="application/zip",
+            width='stretch'
+        )
+
+        st.subheader("Error Analysis Visualization")
+        ignore_cols = ["Job_ID", "Rg_Rec", "p_Rec", "Rel_Err_Rg", "Rel_Err_p", "Chi2"]
+        varying_cols = [c for c in res_df.columns if c not in ignore_cols and res_df[c].nunique() > 1]
+        
+        x_axis = st.selectbox("Select X-Axis", varying_cols if varying_cols else ["Job_ID"], key="batch_x_selector")
+
+        if x_axis in res_df.columns:
+            t1, t2 = st.tabs(["Rg Error", "p Error"])
+            with t1:
+                fig = px.scatter(res_df, x=x_axis, y="Rel_Err_Rg", color="method", symbol="mode", 
+                                 hover_data=["mean_rg", "p_val"], title="Relative Error in Rg")
+                fig.add_hline(y=0, line_dash="dash", line_color="black")
+                # Fixed: Use width='stretch'
+                st.plotly_chart(fig, width='stretch')
+            with t2:
+                fig = px.scatter(res_df, x=x_axis, y="Rel_Err_p", color="method", symbol="mode", 
+                                 hover_data=["mean_rg", "p_val"], title="Relative Error in p")
+                fig.add_hline(y=0, line_dash="dash", line_color="black")
+                # Fixed: Use width='stretch'
+                st.plotly_chart(fig, width='stretch')
+
+if __name__ == "__main__":
+    run()

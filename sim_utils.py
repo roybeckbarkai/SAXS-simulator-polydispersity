@@ -1,204 +1,189 @@
 # File: sim_utils.py
-# Last Updated: Tuesday, February 10, 2026
-# Description: Physics models, distribution functions, and core simulation engine.
+# Last Updated: Wednesday, February 11, 2026
+# Description: Core simulation with Ground Truth moment calculations for QA.
 
 import numpy as np
 from scipy.special import gamma, factorial
 from scipy.ndimage import gaussian_filter
 from scipy.integrate import trapezoid
 
-# --- Math & Physics Utilities ---
-def double_factorial(n):
-    if n <= 0: return 1
-    return n * double_factorial(n - 2)
-
-def nCr(n, r):
-    try:
-        return factorial(n) / (factorial(r) * factorial(n - r))
-    except:
-        return 1
-
 # --- Distributions ---
 def get_distribution(dist_type, r, mean_r, p):
     mean_r = max(mean_r, 1e-6)
     p = max(p, 1e-6)
+    pdf = np.zeros_like(r, dtype=float)
+    mask = r > 0
+    r_valid = r[mask]
     
     if dist_type == 'Lognormal':
         s = np.sqrt(np.log(1 + p**2))
         scale = mean_r / np.exp(s**2 / 2.0)
-        with np.errstate(divide='ignore', invalid='ignore', over='ignore'):
-            coef = 1.0 / (r * s * np.sqrt(2 * np.pi))
-            arg = (np.log(r / scale)**2) / (2 * s**2)
-            pdf = coef * np.exp(-arg)
-        pdf = np.nan_to_num(pdf)
-        return pdf
-
+        with np.errstate(all='ignore'):
+            coef = 1.0 / (r_valid * s * np.sqrt(2 * np.pi))
+            arg = (np.log(r_valid / scale)**2) / (2 * s**2)
+            pdf[mask] = coef * np.exp(-arg)
     elif dist_type == 'Gaussian':
         sigma = p * mean_r
         coef = 1.0 / (sigma * np.sqrt(2 * np.pi))
-        arg = ((r - mean_r)**2) / (2 * sigma**2)
-        return coef * np.exp(-arg)
-
+        pdf[mask] = coef * np.exp(-0.5 * ((r_valid - mean_r) / sigma)**2)
     elif dist_type == 'Schulz':
-        if p < 1e-4: return np.zeros_like(r)
         z = (1.0 / (p**2)) - 1.0
-        if z <= 0: return np.zeros_like(r)
-        a = z + 1
-        b = a / mean_r
-        try:
-            norm = (b**a) / gamma(a)
-        except:
-            norm = 1.0
-        with np.errstate(over='ignore', invalid='ignore'):
-             pdf = norm * (r**z) * np.exp(-b * r)
-        return np.nan_to_num(pdf)
-
+        if z <= 0: z = 100.0
+        beta = mean_r / (z + 1.0)
+        with np.errstate(all='ignore'):
+            norm = (beta**(z + 1)) * gamma(z + 1)
+            pdf[mask] = (r_valid**z * np.exp(-r_valid / beta)) / norm
     elif dist_type == 'Boltzmann':
-        sigma = p * mean_r
-        coef = 1.0 / (sigma * np.sqrt(2))
-        arg = (np.sqrt(2) * np.abs(r - mean_r)) / sigma
-        return coef * np.exp(-arg)
-
+        a = mean_r / 3.0
+        norm = 2 * a**3
+        pdf[mask] = (r_valid**2 * np.exp(-r_valid / a)) / norm
     elif dist_type == 'Triangular':
-        sigma = p * mean_r
-        w = sigma * np.sqrt(6)
-        lower = mean_r - w
-        upper = mean_r + w
-        h = 1.0 / w
-        pdf = np.zeros_like(r)
-        mask_up = (r >= lower) & (r <= mean_r)
-        mask_down = (r > mean_r) & (r <= upper)
-        pdf[mask_up] = h * (r[mask_up] - lower) / w
-        pdf[mask_down] = h * (upper - r[mask_down]) / w
-        return pdf
-
+        half_width = p * mean_r * np.sqrt(6)
+        min_r, max_r = mean_r - half_width, mean_r + half_width
+        mask1 = (r_valid >= min_r) & (r_valid < mean_r)
+        mask2 = (r_valid >= mean_r) & (r_valid <= max_r)
+        pdf[mask][mask1] = (r_valid[mask1] - min_r) / (half_width**2)
+        pdf[mask][mask2] = (max_r - r_valid[mask2]) / (half_width**2)
     elif dist_type == 'Uniform':
-        sigma = p * mean_r
-        w = sigma * np.sqrt(3)
-        lower = mean_r - w
-        upper = mean_r + w
-        pdf = np.zeros_like(r)
-        mask = (r >= lower) & (r <= upper)
-        pdf[mask] = 1.0 / (2 * w)
-        return pdf
-    
-    return np.zeros_like(r)
+        half_width = p * mean_r * np.sqrt(3)
+        min_r, max_r = max(0, mean_r - half_width), mean_r + half_width
+        mask_u = (r_valid >= min_r) & (r_valid <= max_r)
+        if (max_r - min_r) > 0:
+            pdf[mask][mask_u] = 1.0 / (max_r - min_r)
 
-# --- Form Factors ---
+    area = trapezoid(pdf, r)
+    if area > 0: pdf /= area
+    return np.nan_to_num(pdf)
+
 def sphere_form_factor(q, r):
-    q_col = q[:, np.newaxis]
-    r_row = r[np.newaxis, :]
-    qr = q_col * r_row
-    
-    with np.errstate(divide='ignore', invalid='ignore'):
-        amp = 3 * (np.sin(qr) - qr * np.cos(qr)) / (qr**3)
-    amp = np.nan_to_num(amp, nan=1.0) 
-    
-    vol = (4.0/3.0) * np.pi * (r_row**3)
-    return (vol**2) * (amp**2)
-
-def debye_form_factor(q, rg):
-    q_col = q[:, np.newaxis]
-    r_row = rg[np.newaxis, :]
-    u = (q_col * r_row)**2
-    with np.errstate(divide='ignore', invalid='ignore'):
-        val = 2.0 * (np.exp(-u) + u - 1.0) / (u**2)
-    val = np.nan_to_num(val, nan=1.0)
+    qr = q * r
+    with np.errstate(all='ignore'):
+        val = 3 * (np.sin(qr) - qr * np.cos(qr)) / (qr**3)
+        val[qr == 0] = 1.0
     return val
 
-# --- Core Simulation Runner ---
 def run_simulation_core(params):
-    mean_rg = float(params['mean_rg'])
-    p_val = float(params['p_val'])
-    dist_type = params['dist_type']
-    mode_key = params['mode']
-    pixels = int(float(params['pixels']))
-    q_max = float(params['q_max'])
-    q_min = float(params['q_min'])
-    n_bins = int(float(params['n_bins']))
-    smearing = float(params['smearing'])
-    flux = float(params['flux'])
-    noise = bool(params['noise'])
-    binning_mode = params['binning_mode']
+    # Inputs
+    mean_r = params.get('mean_r', 2.0)
+    p = params.get('p', 0.3)
+    dist_type = params.get('dist_type', 'Gaussian')
+    mode_key = params.get('mode_key', 'Sphere')
+    q_min_user = params.get('q_min', 0.01)
+    q_max = params.get('q_max', 2.5)
+    n_bins = int(params.get('n_bins', 256))
+    pixels = int(params.get('pixels', 1024))
+    psf_pixels = params.get('smearing_sigma', 2.0)
+    flux = params.get('flux', 1e5)
+    add_noise = params.get('add_noise', True)
+    max_rg_analysis = params.get('max_rg_analysis', mean_r * 10.0)
 
-    mean_r = mean_rg * np.sqrt(5.0/3.0) 
-    sigma = p_val * mean_r
+    # 1. Distribution & Ground Truth
+    r_max_calc = mean_r * (1 + 6*p)
+    r_axis = np.linspace(0.1, max(r_max_calc, 20.0), 1000)
+    pdf = get_distribution(dist_type, r_axis, mean_r, p)
 
-    r_min = max(0.1, mean_r - 5 * sigma)
-    r_max = mean_r + 15 * sigma
-    r_steps = 400
-    r_vals = np.linspace(r_min, r_max, r_steps)
+    # Calculate True Moments
+    m3 = trapezoid(r_axis**3 * pdf, r_axis)
+    m6 = trapezoid(r_axis**6 * pdf, r_axis)
+    m8 = trapezoid(r_axis**8 * pdf, r_axis)
     
-    if mode_key == 'IDP':
-        r_min_idp = max(0.1, mean_rg * (1 - 5*p_val))
-        r_max_idp = mean_rg * (1 + 15*p_val)
-        r_vals = np.linspace(r_min_idp, r_max_idp, r_steps)
-        pdf_vals = get_distribution(dist_type, r_vals, mean_rg, p_val)
-    else:
-        pdf_vals = get_distribution(dist_type, r_vals, mean_r, p_val)
+    true_rg_scat = np.sqrt(0.6 * m8 / m6) if m6 > 0 else 0
+    # Porod Volume Vp = 2pi^2 I(0)/Q = 4/3 pi <R^6>/<R^3>
+    true_vp = (4/3 * np.pi) * (m6 / m3) if m3 > 0 else 0
+    # Expected I(0) proportional to m6 (scaled by contrast/volume later)
+    
+    qa_metrics = {
+        'true_rg_scat': true_rg_scat,
+        'true_vp': true_vp,
+        'true_m6_m3': m6/m3 if m3 > 0 else 0
+    }
 
-    area = trapezoid(pdf_vals, r_vals)
-    if area > 0: pdf_vals /= area
-
-    q_steps = 200
-    q_1d = np.logspace(np.log10(1e-3), np.log10(q_max * 1.5), q_steps)
-
+    # 2. Detector
+    center = pixels // 2
+    y, x = np.ogrid[-center:pixels-center, -center:pixels-center]
+    r_px = np.sqrt(x**2 + y**2)
+    q_per_pixel = q_max / center
+    q_map = r_px * q_per_pixel
+    
+    # 3. 1D Calculation
+    q_fine_max = q_max * 1.42
+    q_fine = np.linspace(0, q_fine_max, 2000)
+    i_fine = np.zeros_like(q_fine)
+    
     if mode_key == 'Sphere':
-        i_matrix = sphere_form_factor(q_1d, r_vals) 
-        i_1d_ideal = trapezoid(i_matrix * pdf_vals, r_vals, axis=1) 
+        for r_val, prob in zip(r_axis, pdf):
+            if prob < 1e-6: continue
+            ff = sphere_form_factor(q_fine, r_val)
+            vol = (4/3) * np.pi * r_val**3
+            i_fine += prob * (vol**2) * (ff**2)
     else:
-        i_matrix = debye_form_factor(q_1d, r_vals)
-        i_1d_ideal = trapezoid(i_matrix * pdf_vals, r_vals, axis=1)
+        # IDP (Gaussian Chain)
+        u = (q_fine * mean_r)**2
+        with np.errstate(all='ignore'):
+            f = 2 * (np.exp(-u) + u - 1) / (u**2)
+            f[u==0] = 1.0
+        i_fine = f * (mean_r**4)
 
-    x = np.linspace(-q_max, q_max, pixels)
-    y = np.linspace(-q_max, q_max, pixels)
-    xv, yv = np.meshgrid(x, y)
-    qv_r = np.sqrt(xv**2 + yv**2)
+    # 4. Map & Normalize
+    i_2d = np.interp(q_map, q_fine, i_fine, right=0.0)
+    
+    # Normalize peak to Flux
+    center_val = i_2d[center, center]
+    if center_val > 0:
+        i_2d = i_2d * (flux / center_val)
 
-    i_2d_ideal = np.interp(qv_r.ravel(), q_1d, i_1d_ideal, left=i_1d_ideal[0], right=0)
-    i_2d_ideal = i_2d_ideal.reshape(pixels, pixels)
+    if psf_pixels > 0:
+        i_2d = gaussian_filter(i_2d, sigma=psf_pixels)
 
-    if smearing > 0:
-        i_2d_smeared = gaussian_filter(i_2d_ideal, sigma=smearing)
+    if add_noise:
+        i_2d_noisy = np.random.poisson(i_2d)
+        i_2d_final = np.maximum(0, i_2d_noisy).astype(int)
     else:
-        i_2d_smeared = i_2d_ideal
+        i_2d_final = i_2d
 
-    total_int = np.sum(i_2d_smeared)
-    scale_factor = flux / total_int if total_int > 0 else 1.0
-    i_2d_scaled = i_2d_smeared * scale_factor
-
-    if noise:
-        i_2d_final = np.random.poisson(i_2d_scaled).astype(float)
+    # 5. Binning
+    binning = params.get('binning_mode', 'Log')
+    # Prevent empty bins: q_min must be >= resolution
+    q_res = q_per_pixel
+    q_min = max(q_min_user, q_res)
+    
+    flat_q = r_px.ravel() * q_per_pixel
+    flat_i = i_2d_final.ravel()
+    
+    mask = flat_q <= q_max
+    flat_q = flat_q[mask]
+    flat_i = flat_i[mask]
+    
+    if binning == 'Linear':
+        bins = np.linspace(q_min, q_max, n_bins+1)
     else:
-        i_2d_final = i_2d_scaled
-
-    # Radial Averaging
-    if binning_mode == "Linear" or binning_mode == "Lin":
-        sim_bin_width = (q_max - q_min) / n_bins
-        if sim_bin_width <= 0: sim_bin_width = q_max / n_bins
-        r_indices = ((qv_r - q_min) / sim_bin_width).astype(int).ravel()
-        valid_mask = (r_indices >= 0) & (r_indices < n_bins) & (qv_r.ravel() <= q_max)
-        tbin = np.bincount(r_indices[valid_mask], weights=i_2d_final.ravel()[valid_mask], minlength=n_bins)
-        nr = np.bincount(r_indices[valid_mask], minlength=n_bins)
-        radial_prof = np.zeros(n_bins)
-        nonzero = nr > 0
-        radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
-        q_sim = q_min + (np.arange(n_bins) + 0.5) * sim_bin_width
-    else: # Logarithmic
         q_min_log = max(q_min, 1e-4)
-        edges = np.logspace(np.log10(q_min_log), np.log10(q_max), n_bins + 1)
-        r_vals_flat = qv_r.ravel()
-        i_vals_flat = i_2d_final.ravel()
-        inds = np.digitize(r_vals_flat, edges)
-        valid_mask = (inds >= 1) & (inds <= n_bins)
-        valid_inds = inds[valid_mask] - 1 
-        tbin = np.bincount(valid_inds, weights=i_vals_flat[valid_mask], minlength=n_bins)
-        nr = np.bincount(valid_inds, minlength=n_bins)
-        radial_prof = np.zeros(n_bins)
-        nonzero = nr > 0
-        radial_prof[nonzero] = tbin[nonzero] / nr[nonzero]
-        q_sim = np.sqrt(edges[:-1] * edges[1:])
+        bins = np.logspace(np.log10(q_min_log), np.log10(q_max), n_bins+1)
+        
+    counts, _ = np.histogram(flat_q, bins, weights=flat_i)
+    norm, _ = np.histogram(flat_q, bins)
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        i_1d = counts / norm
+    
+    i_1d = np.nan_to_num(i_1d)
+    
+    if binning == 'Linear':
+        q_1d = (bins[:-1] + bins[1:]) / 2
+    else:
+        q_1d = np.sqrt(bins[:-1] * bins[1:])
 
-    valid_sim = radial_prof > 0
-    # Return non-zero points for analysis
-    return q_sim[valid_sim], radial_prof[valid_sim], i_2d_final, r_vals, pdf_vals
+    # Remove empty bins
+    valid = norm > 0
+    q_1d = q_1d[valid]
+    i_1d = i_1d[valid]
+
+    return {
+        'q': q_1d,
+        'i_obs': i_1d,
+        'i_2d': i_2d_final,
+        'r_dist': r_axis,
+        'pdf_dist': pdf,
+        'max_rg_analysis': max_rg_analysis,
+        'qa_metrics': qa_metrics
+    }
